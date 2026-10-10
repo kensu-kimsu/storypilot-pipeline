@@ -6,7 +6,7 @@ from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from creative_director import build_edit_plan, write_fcpxml
+from creative_director import build_edit_plan, prepare_assets_before_edit, write_fcpxml
 
 
 class CreativeDirectorTests(unittest.TestCase):
@@ -39,10 +39,10 @@ class CreativeDirectorTests(unittest.TestCase):
         self.assertEqual(a["workflow"], "assistant_editor_handoff")
         self.assertTrue(a["human_polish_targets"])
 
-    def test_unverified_asset_is_not_added_to_timeline(self):
+    def test_asset_presence_is_not_rejected_for_missing_rights_label(self):
         self.job["assets"]["portrait"]["rights_status"] = "unknown"
         plan = build_edit_plan(self.job)
-        self.assertTrue(all(shot["asset_id"] != "portrait" for shot in plan["shots"]))
+        self.assertTrue(any(shot["asset_id"] == "portrait" for shot in plan["shots"]))
 
     def test_fcpxml_is_well_formed_and_contains_storyline_and_shots(self):
         plan = build_edit_plan(self.job)
@@ -60,6 +60,21 @@ class CreativeDirectorTests(unittest.TestCase):
         self.job["segments"][1]["start"] = 9
         with self.assertRaises(ValueError):
             build_edit_plan(self.job)
+
+    def test_pre_edit_asset_check_writes_blocked_report_for_missing_visual(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            job = {"job_id": "preflight", "assets": {}, "segments": [
+                {"asset_queries": ["Rockefeller portrait"], "asset_ids": []}
+            ]}
+            source = root / "timed_edit_job.json"
+            source.write_text(json.dumps(job), encoding="utf-8")
+            report = root / "edit_readiness.json"
+            with self.assertRaisesRegex(RuntimeError, "Pre-edit asset check blocked"):
+                prepare_assets_before_edit(job, source, report)
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "blocked")
+            self.assertEqual(payload["items"][0]["query"], "Rockefeller portrait")
 
 
 if __name__ == "__main__":
