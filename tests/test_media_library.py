@@ -78,6 +78,17 @@ class MediaLibraryTests(unittest.TestCase):
         self.assertEqual(normalized[0]["creator"], "Example author")
         self.assertEqual(normalized[0]["license"], "CC BY-SA 4.0")
 
+    def test_nasa_original_assets_without_extensions_are_discovered(self):
+        with tempfile.TemporaryDirectory() as temp:
+            library = MediaLibrary(Path(temp) / "assets")
+            def cached(provider, *_args, **_kwargs):
+                if provider == "nasa_images":
+                    return {"collection": {"items": [{"data": [{"nasa_id": "apollo-1", "title": "Apollo image"}]}]}}
+                return {"collection": {"items": [{"href": "https://images-assets.nasa.gov/image/apollo-1/apollo-1~orig"}]}}
+            library._cached_public_json = cached
+            candidates = library._nasa_candidates("Apollo", "picture", 1)
+            self.assertEqual(candidates[0]["download_url"], "https://images-assets.nasa.gov/image/apollo-1/apollo-1~orig")
+
 
 if __name__ == "__main__":
     unittest.main()
