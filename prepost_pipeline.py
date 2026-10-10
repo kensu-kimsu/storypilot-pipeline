@@ -60,8 +60,8 @@ def get_niche_config(niche: str, prompts_file: Path | None = None) -> dict:
         if query == key or key in query or query in key:
             return config
     return {
-        "voice_name": "en-AU-Isla:MAI-Voice-2.1",
-        "narration_direction": "Natural, clear Australian English. Match the scene's emotional tone without forced slang or exaggerated delivery.",
+        "voice_name": "en-US-Ethan:MAI-Voice-2.1",
+        "narration_direction": "Natural, clear English. Match the scene's emotional tone without forced slang or exaggerated delivery.",
         "default_search_fallback": "documentary topic",
         "research_prompt": "Prioritise primary documents, reputable reporting, and independent corroboration. Flag uncertainty and conflicting accounts.",
         "system_prompt": "Tell a clear, evidence-led story with a strong beginning, a logical build, and a satisfying factual conclusion.",
@@ -415,14 +415,14 @@ def write_script(topic: str, channel: dict, research: dict, niche_config: dict |
     claims = research.get("verified_claims", [])
     if not claims:
         raise RuntimeError("Script writing stopped: no research claims passed the verification step")
-    voice_name = channel.get("voice_name") or niche_config.get("voice_name", "en-AU-Isla:MAI-Voice-2.1")
-    narration_direction = niche_config.get("narration_direction", "Natural, clear Australian English.")
+    voice_name = channel.get("voice_name") or niche_config.get("voice_name", "en-US-Ethan:MAI-Voice-2.1")
+    narration_direction = niche_config.get("narration_direction", "Natural, clear English.")
     prompt = f"""Write a retention-focused documentary script based ONLY on the supplied VERIFIED research claims. Do not add unsupported facts. Attach source claim IDs to every factual paragraph. Preserve qualifications and uncertainty. Cite claims inline as [C1].
 Channel: {channel.get('name', channel.get('handle', ''))}; niche: {channel.get('niche')}; voice/tone: {channel.get('tone', 'cinematic, clear, curious')}.
 Topic: {topic}. Target at least 20 minutes spoken narration (roughly 2,700-3,000 words at a measured documentary pace). {niche_config.get('system_prompt', '')}
 Retention design: {niche_config.get('retention_guidance', '')}
 Maintain attention from the first line through the ending: open on a specific verified moment or question; state a truthful story promise early; build in clear acts where each section adds evidence, changes the stakes, or corrects an earlier assumption; pay off every major question. Add meaningful re-hooks about every 2-3 minutes, but never use fake cliffhangers, repeat the same teaser, or withhold basic facts merely to inflate watch time. Remove repeated exposition and filler. The ending must resolve the central story, then offer a natural reason to watch another episode without an artificial cliffhanger.
-Write for a natural human narrator using Australian English. Keep sentences speakable and varied, use contractions where natural, and avoid stiff transitions, repeated rhetorical questions, forced slang, and overly polished essay language. Never put performance directions inside the words to be spoken. The narrator should follow the emotion and tone assigned to each scene; let intensity rise and fall with the evidence rather than reading every line dramatically.
+Write for a natural human narrator using English. Keep sentences speakable and varied, use contractions where natural, and avoid stiff transitions, repeated rhetorical questions, forced slang, and overly polished essay language. Never put performance directions inside the words to be spoken. The narrator should follow the emotion and tone assigned to each scene; let intensity rise and fall with the evidence rather than reading every line dramatically.
 For each narration chunk, give a `tone` that the creative director can use, plus `delivery_emotion`, `delivery_pace`, `vocal_intensity` from 0.0 to 1.0, and `pause_after_seconds`. These fields guide a future TTS/narrator pass; do not write the audio itself. Overall narration direction: {narration_direction}
 For each narration chunk, decide whether a real news headline is creatively necessary. Normally set "news_article_screenshot": null. Request one only when an actual news headline materially strengthens the scene (for example, showing contemporaneous media coverage of a major event). Do not request generic headlines or decorative screenshots; request at most two total. When needed, set {{"search_query":"specific article/story query","highlight_keywords":["one or two exact headline terms"],"reason":"why the headline itself helps this scene"}}.
 Research ledger (only these verified claims may support factual narration): {json.dumps(claims, ensure_ascii=False)}
