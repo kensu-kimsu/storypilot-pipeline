@@ -5,16 +5,21 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from workspace_setup import configure_api_keys, ensure_workspace
+from workspace_setup import OPTIONAL_API_KEYS, configure_api_keys, ensure_workspace
 
 
 class WorkspaceSetupTests(unittest.TestCase):
+    def test_only_user_provided_api_keys_are_prompted(self):
+        self.assertEqual(set(OPTIONAL_API_KEYS), {
+            "YOUTUBE_API_KEY", "PIXABAY_API_KEY", "FREESOUND_API_KEY",
+        })
+
     def test_workspace_directories_are_created(self):
         with tempfile.TemporaryDirectory() as temp:
             paths = ensure_workspace(Path(temp) / "production")
             expected = {
                 "discovery", "jobs", "pictures", "video_clips", "generated_media",
-                "background_music", "sfx", "pixabay_search_cache", "rendered_outputs",
+                "background_music", "sfx", "pixabay_search_cache", "public_search_cache", "rendered_outputs",
                 "temp_assets", "logs", "audio_library_music_seed", "audio_library_sfx_seed",
             }
             self.assertTrue(all(paths[name].is_dir() for name in expected))
