@@ -102,7 +102,7 @@ pip install playwright
 python -m playwright install chromium
 ```
 
-Then add `--capture-research-screenshots` to the `preproduction` command. Use `--screenshot-limit 5` to capture up to five pages. The command selects unique public URLs from `research.json`, preferring claims marked high confidence, opens each page in Chromium, and saves a full-page PNG. It does not automate Google Search or bypass paywalls, login screens, or site restrictions. Sites may block browser automation, so failures are recorded in the manifest.
+Then add `--capture-research-screenshots` to the `preproduction` command. Use `--screenshot-limit 5` to capture up to five pages. The command selects unique public URLs from `research.json`, preferring claims marked high confidence, opens each page in Chromium, and saves the article or main content element as a PNG (falling back to a full-page capture). It does not automate Google Search or bypass paywalls, login screens, or site restrictions. Sites may block browser automation, so failures are recorded in the manifest.
 
 Screenshots are stored under `assets/research_references/<job-name>/` with names such as `rockefeller-oil_example-com_source-01.png`. `research_screenshots.json` records the original URL, source title/publisher, claim ID, capture time, page title, and result. These are **research references**; capturing a page does not grant permission to put its screenshot in the published video. The underlying page may contain copyrighted text, photos, or ads.
 
