@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from prepost_pipeline import asset_research, is_duplicate, qa_package
+from prepost_pipeline import asset_research, is_duplicate, qa_package, research_screenshot_targets
 
 
 class PrePostPipelineTests(unittest.TestCase):
@@ -32,6 +32,18 @@ class PrePostPipelineTests(unittest.TestCase):
             categories = [asset["category"] for asset in manifest["assets"]]
             self.assertEqual(categories, ["video", "picture", "music", "sfx", "sfx"])
             self.assertEqual(manifest["assets"][0]["max_duration_seconds"], 5)
+
+    def test_research_screenshot_targets_deduplicate_and_prefer_high_confidence(self):
+        research = {"claims": [
+            {"claim_id": "C1", "url": "https://example.org/article", "source_title": "Example article", "confidence": "low"},
+            {"claim_id": "C2", "url": "https://example.org/article", "source_title": "Duplicate", "confidence": "high"},
+            {"claim_id": "C3", "url": "file:///etc/passwd", "source_title": "Local file", "confidence": "high"},
+            {"claim_id": "C4", "url": "http://127.0.0.1/admin", "source_title": "Local service", "confidence": "high"},
+            {"claim_id": "C5", "url": "https://news.example.net/story", "source_title": "News story", "confidence": "medium"},
+        ]}
+        targets = research_screenshot_targets(research, limit=5)
+        self.assertEqual([row["claim_id"] for row in targets], ["C2", "C5"])
+        self.assertEqual(research_screenshot_targets(research, limit=0), [])
 
 
 if __name__ == "__main__":
