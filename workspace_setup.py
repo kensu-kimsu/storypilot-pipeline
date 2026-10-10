@@ -14,8 +14,6 @@ OPTIONAL_API_KEYS = {
     "YOUTUBE_API_KEY": "YouTube Data API (topic discovery; optional when a topic is supplied)",
     "PIXABAY_API_KEY": "Pixabay API (picture/video search and downloads)",
     "FREESOUND_API_KEY": "Freesound API (CC0 music/SFX search)",
-    "GOOGLE_CSE_API_KEY": "Google Custom Search API (image discovery)",
-    "GOOGLE_CSE_CX": "Google Programmable Search Engine ID (used with GOOGLE_CSE_API_KEY)",
 }
 
 
@@ -33,6 +31,7 @@ def ensure_workspace(base_dir: Path) -> dict[str, Path]:
         "background_music": base / "assets" / "background_music",
         "sfx": base / "assets" / "sfx",
         "pixabay_search_cache": base / "assets" / ".pixabay_search_cache",
+        "public_search_cache": base / "assets" / ".public_search_cache",
         "rendered_outputs": base / "rendered_outputs",
         "temp_assets": base / "temp_assets",
         "logs": base / "logs",
