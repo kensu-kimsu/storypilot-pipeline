@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from prepost_pipeline import asset_research, is_duplicate, qa_package, research_screenshot_targets
+from prepost_pipeline import asset_research, fulfill_news_headline_requests, is_duplicate, qa_package
 
 
 class PrePostPipelineTests(unittest.TestCase):
@@ -33,20 +33,29 @@ class PrePostPipelineTests(unittest.TestCase):
             self.assertEqual(categories, ["video", "picture", "music", "sfx", "sfx"])
             self.assertEqual(manifest["assets"][0]["max_duration_seconds"], 5)
 
-    def test_research_screenshot_targets_deduplicate_and_prefer_high_confidence(self):
-        research = {"claims": [
-            {"claim_id": "C1", "url": "https://example.org/article", "source_title": "Example article", "confidence": "low"},
-            {"claim_id": "C2", "url": "https://example.org/article", "source_title": "Duplicate", "confidence": "high"},
-            {"claim_id": "C3", "url": "file:///etc/passwd", "source_title": "Local file", "confidence": "high"},
-            {"claim_id": "C4", "url": "http://127.0.0.1/admin", "source_title": "Local service", "confidence": "high"},
-            {"claim_id": "C5", "url": "https://news.example.net/story", "source_title": "News story", "confidence": "medium"},
-        ]}
-        targets = research_screenshot_targets(research, limit=5)
-        self.assertEqual([row["claim_id"] for row in targets], ["C2", "C5"])
-        self.assertEqual(research_screenshot_targets(research, limit=0), [])
-        manual = research_screenshot_targets(research, limit=2, extra_urls=["https://news.example.com/story"])
-        self.assertEqual(manual[0]["confidence"], "user_provided")
-        self.assertEqual(manual[0]["url"], "https://news.example.com/story")
+    def test_news_headline_search_is_skipped_when_creative_brief_does_not_request_it(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            result = fulfill_news_headline_requests(
+                "A topic", {"narration_chunks": [{"news_article_screenshot": None}]},
+                root / "assets", job_id="test-job",
+            )
+            self.assertFalse(result["searched"])
+            self.assertFalse((root / "assets" / "screenshots").exists())
+
+    def test_creative_brief_request_creates_news_headline_asset(self):
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = asset_research({"narration_chunks": [{
+                "news_article_screenshot": {
+                    "search_query": "company scandal newspaper headline",
+                    "highlight_keywords": ["scandal", "company"],
+                    "reason": "Show how the story broke publicly",
+                }
+            }]}, Path(temp))
+            request = manifest["assets"][0]
+            self.assertEqual(request["category"], "news_headline_screenshot")
+            self.assertEqual(request["status"], "awaiting_search")
+            self.assertEqual(request["highlight_keywords"], ["scandal", "company"])
 
 
 if __name__ == "__main__":
