@@ -60,7 +60,7 @@ def get_niche_config(niche: str, prompts_file: Path | None = None) -> dict:
         if query == key or key in query or query in key:
             return config
     return {
-        "voice_name": "en-AU-WilliamNeural",
+        "voice_name": "en-AU-Isla:MAI-Voice-2.1",
         "narration_direction": "Natural, clear Australian English. Match the scene's emotional tone without forced slang or exaggerated delivery.",
         "default_search_fallback": "documentary topic",
         "research_prompt": "Prioritise primary documents, reputable reporting, and independent corroboration. Flag uncertainty and conflicting accounts.",
@@ -415,7 +415,7 @@ def write_script(topic: str, channel: dict, research: dict, niche_config: dict |
     claims = research.get("verified_claims", [])
     if not claims:
         raise RuntimeError("Script writing stopped: no research claims passed the verification step")
-    voice_name = channel.get("voice_name") or niche_config.get("voice_name", "en-AU-WilliamNeural")
+    voice_name = channel.get("voice_name") or niche_config.get("voice_name", "en-AU-Isla:MAI-Voice-2.1")
     narration_direction = niche_config.get("narration_direction", "Natural, clear Australian English.")
     prompt = f"""Write a retention-focused documentary script based ONLY on the supplied VERIFIED research claims. Do not add unsupported facts. Attach source claim IDs to every factual paragraph. Preserve qualifications and uncertainty. Cite claims inline as [C1].
 Channel: {channel.get('name', channel.get('handle', ''))}; niche: {channel.get('niche')}; voice/tone: {channel.get('tone', 'cinematic, clear, curious')}.
