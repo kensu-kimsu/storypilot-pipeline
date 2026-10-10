@@ -1,6 +1,6 @@
 {
   "CYBERSECURITY": {
-    "voice_name": "en-AU-WilliamNeural",
+    "voice_name": "en-AU-Isla:MAI-Voice-2.1",
     "narration_direction": "Natural, clear Australian English. Begin with controlled curiosity, build tension as evidence accumulates, and use restrained seriousness for victims and consequences. Avoid forced slang and exaggerated hacker-movie delivery.",
     "default_search_fallback": "cybersecurity incident server room",
     "research_prompt": "Investigate the incident as a sourced timeline: discovery, initial access, affected systems, response, attribution claims, and consequences. Prioritise primary advisories from CISA and national cyber agencies, court records, company incident reports, security vendor technical reports, and reputable journalism. Distinguish confirmed technical evidence from a vendor or government attribution, and mark allegations as allegations. Do not provide operational instructions that would enable an intrusion. Verify CVE identifiers, dates, affected versions, named groups, losses, and quoted statements against the original source where possible.",
@@ -8,7 +8,7 @@
     "retention_guidance": "Open on a concrete consequence or unanswered question from the incident, then reveal the technical explanation in stages. Re-hook with a new piece of evidence, a changed assumption, or a consequence—not repeated claims that a twist is coming. End with the verified lesson or unresolved evidence gap."
   },
   "FINANCE": {
-    "voice_name": "en-AU-WilliamNeural",
+    "voice_name": "en-AU-Isla:MAI-Voice-2.1",
     "narration_direction": "Natural, composed Australian English. Sound curious and precise, with measured emphasis on scale, risk, and turning points. Explain figures conversationally; avoid sales-like excitement or financial-adviser certainty.",
     "default_search_fallback": "historical financial crisis economic data",
     "research_prompt": "Build a dated evidence ledger for the financial story. Prioritise filings and enforcement records from the SEC or relevant regulator, central-bank and treasury data, Federal Reserve and FRASER archives, audited reports, court records, and peer-reviewed economic research. Verify each amount, currency, unit, date, inflation adjustment, and comparison. Separate reported loss from estimated exposure, nominal from real values, correlation from causation, and a company's claims from independently established facts. Record methodological limits and conflicting estimates.",
@@ -16,7 +16,7 @@
     "retention_guidance": "Start with the decision or moment that made the stakes real, then trace the chain of incentives and consequences. Introduce figures when they change the viewer's understanding. Re-hook with the next consequence or hidden assumption, and finish by answering the opening question with the evidence."
   },
   "BUSINESS": {
-    "voice_name": "en-AU-WilliamNeural",
+    "voice_name": "en-AU-Isla:MAI-Voice-2.1",
     "narration_direction": "Natural Australian English with a confident, observant documentary tone. Let intrigue come from the gap between public claims, internal decisions, and documented outcomes. Keep emotion controlled when discussing allegations or job losses.",
     "default_search_fallback": "company history corporate filings",
     "research_prompt": "Research the company's timeline and business mechanics using annual reports, SEC or local-regulator filings, court judgments and exhibits, competition decisions, patent records, official product announcements, and credible business reporting. Verify executive roles and dates, revenue and market-share figures, deal terms, lawsuits, and outcomes. Distinguish allegations, settlements, court findings, and proven misconduct. Attribute quotations and company claims; note when sources disagree or rely on estimates.",
@@ -24,7 +24,7 @@
     "retention_guidance": "Open at a consequential decision, launch, acquisition, or reversal. Then move between the company's strategy and the evidence of its effects. Give each section a new decision or contradiction that advances the story; pay off the opening question and separate documented causes from interpretation."
   },
   "DARK HISTORY": {
-    "voice_name": "en-AU-WilliamNeural",
+    "voice_name": "en-AU-Isla:MAI-Voice-2.1",
     "narration_direction": "Natural, steady Australian English. Use quiet curiosity for investigation, gravity for human loss, and restraint around violence. Leave room for pauses after significant evidence; never perform victims' suffering for shock value.",
     "default_search_fallback": "historical archive records event",
     "research_prompt": "Reconstruct the event from primary records where available: archives, official inquiries, court records, contemporary newspapers, diaries, maps, oral histories, and museum or university collections. Cross-check names, places, dates, translations, and chronology. Distinguish contemporary evidence from later recollection and historian interpretation. Identify gaps, contested accounts, colonial or political framing, and uncertainty. Avoid treating an absence of records as proof that something did not happen.",
@@ -32,7 +32,7 @@
     "retention_guidance": "Open with a specific documented mystery, decision, or consequence. Reveal context and evidence in a clear chronology, letting each discovery narrow or complicate the possibilities. Avoid withholding basic facts just to manufacture suspense. End with the strongest supported conclusion and the remaining uncertainty."
   },
   "FUTURE TECH": {
-    "voice_name": "en-AU-WilliamNeural",
+    "voice_name": "en-AU-Isla:MAI-Voice-2.1",
     "narration_direction": "Natural Australian English: curious, lucid, and thoughtful. Use a little wonder when the evidence earns it, then return to precise explanation. Keep speculative claims clearly conditional and avoid breathless predictions.",
     "default_search_fallback": "technology research paper real world demonstration",
     "research_prompt": "Separate what exists now from what is proposed or forecast. Prioritise peer-reviewed papers, preprints labelled as such, benchmark methodology, standards bodies, regulator documents, patents, and technical demonstrations with transparent limitations. Verify units, dates, sample sizes, compute or energy claims, and whether results were independently replicated. Attribute company performance claims, distinguish laboratory capability from deployed capability, and identify uncertainty in forecasts.",
