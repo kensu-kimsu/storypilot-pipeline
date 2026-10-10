@@ -1,0 +1,11 @@
+[
+  {
+    "channel_id": "UC_REPLACE_WITH_CHANNEL_ID",
+    "handle": "@example",
+    "name": "Example Channel",
+    "niche": "business history documentaries",
+    "audience": "viewers interested in company history and finance",
+    "tone": "cinematic, fact-led, curious",
+    "voice_name": "en-US-GuyNeural"
+  }
+]

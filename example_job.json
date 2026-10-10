@@ -1,0 +1,59 @@
+{
+  "job_id": "rockefeller-demo-001",
+  "topic": "Historical Monopoly: Rockefeller",
+  "format": "short_form",
+  "canvas": {"width": 1920, "height": 1080, "fps": 30},
+  "narration_file": "D:/YouTubeProduction/jobs/rockefeller/narration.wav",
+  "narration_duration": 30,
+  "palette": {"background": "#14100C", "accent": "#FFD700", "secondary": "#E8D9B5"},
+  "segments": [
+    {
+      "start": 0,
+      "end": 15.2,
+      "text": "One company came to control nearly every stage of the oil business.",
+      "tone": "dramatic_realization",
+      "audio_energy": 0.28,
+      "asset_ids": ["rockefeller_portrait", "standard_oil_newspaper"],
+      "overlay_text": "ONE COMPANY. AN ENTIRE INDUSTRY.",
+      "sfx_candidates": ["paper_rustle", "low_impact", "none"],
+      "music_mood": "restrained_tension"
+    },
+    {
+      "start": 15.2,
+      "end": 30,
+      "text": "The advantage was built through refining, transport deals, and a fast-growing network of pipelines.",
+      "tone": "historical_context",
+      "audio_energy": 0.65,
+      "asset_ids": ["oil_route_map", "refinery_archive_photo"],
+      "overlay_text": "REFINING → RAIL → PIPELINES",
+      "sfx_candidates": ["rail_clank_soft", "paper_rustle", "none"],
+      "music_mood": "building_pressure"
+    }
+  ],
+  "assets": {
+    "rockefeller_portrait": {
+      "path": "D:/YouTubeProduction/jobs/rockefeller/assets/rockefeller_portrait.png",
+      "kind": "image",
+      "duration": 15,
+      "rights_status": "public_domain"
+    },
+    "standard_oil_newspaper": {
+      "path": "D:/YouTubeProduction/jobs/rockefeller/assets/standard_oil_newspaper.png",
+      "kind": "document",
+      "duration": 20,
+      "rights_status": "public_domain"
+    },
+    "oil_route_map": {
+      "path": "D:/YouTubeProduction/jobs/rockefeller/assets/oil_route_map.mp4",
+      "kind": "map",
+      "duration": 30,
+      "rights_status": "owned"
+    },
+    "refinery_archive_photo": {
+      "path": "D:/YouTubeProduction/jobs/rockefeller/assets/refinery_archive.png",
+      "kind": "image",
+      "duration": 20,
+      "rights_status": "licensed"
+    }
+  }
+}
