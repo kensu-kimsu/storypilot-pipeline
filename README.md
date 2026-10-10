@@ -60,6 +60,8 @@ For macOS/Linux, use a path such as `./production` instead. Key entry is hidden.
 | `PIXABAY_API_KEY` | Optional; enter your key to include Pixabay stock candidates/downloads. |
 | `FREESOUND_API_KEY` | Optional; enables the CC0-filtered Freesound audio preview search. |
 
+Google result pages are not scraped. Google's policy treats automated queries and scraping of Search results without permission as prohibited machine-generated traffic. StoryPilot instead uses OpenAI web search for research, then can open and screenshot the cited article pages directly.
+
 Internet Archive, Wikimedia Commons, Library of Congress, and NASA Image and Video Library need no key for the public searches used by this project. Google CSE fields have been removed from setup.
 
 The command creates the workspace folders, including `assets/pictures/`, `assets/video_clips/`, `assets/generated_media/`, `assets/background_music/`, `assets/sfx/`, `jobs/`, `discovery/`, `rendered_outputs/`, `temp_assets/`, and `logs/`.
@@ -80,6 +82,7 @@ python main_pipeline.py preproduction `
   --topic "The rise and collapse of Example Company" `
   --discover-assets `
   --make-thumbnails `
+  --capture-research-screenshots `
   --acquire-assets `
   --youtube-audio-library-dir "D:\YouTubeProduction\audio_library_seed"
 ```
@@ -92,6 +95,17 @@ To let the program research recent popular YouTube videos and choose the first n
 python main_pipeline.py preproduction --channels channels.json --base-dir ./production --channel @yourhandle --discover-assets --make-thumbnails --acquire-assets
 ```
 
+To save screenshot references for up to three cited research pages in the same run, install Playwright's browser once:
+
+```bash
+pip install playwright
+python -m playwright install chromium
+```
+
+Then add `--capture-research-screenshots` to the `preproduction` command. Use `--screenshot-limit 5` to capture up to five pages. The command selects unique public URLs from `research.json`, preferring claims marked high confidence, opens each page in Chromium, and saves a full-page PNG. It does not automate Google Search or bypass paywalls, login screens, or site restrictions. Sites may block browser automation, so failures are recorded in the manifest.
+
+Screenshots are stored under `assets/research_references/<job-name>/` with names such as `rockefeller-oil_example-com_source-01.png`. `research_screenshots.json` records the original URL, source title/publisher, claim ID, capture time, page title, and result. These are **research references**; capturing a page does not grant permission to put its screenshot in the published video. The underlying page may contain copyrighted text, photos, or ads.
+
 That discovery mode needs `YOUTUBE_API_KEY`. YouTube's public counters do not provide competitor retention or watch-time data. The project processes one selected topic per run. It reads `history.json` to avoid repeats, but the current CLI does not automatically write completed topics to that file; the `record_history()` helper must be called by a later publishing/completion step.
 
 ## 4. What each stage does and writes
@@ -101,6 +115,7 @@ That discovery mode needs `YOUTUBE_API_KEY`. YouTube's public counters do not pr
 | Workspace/setup | Creates directories and loads keys from environment or `secrets.json`. | Workspace folders; local `secrets.json`; no media yet. |
 | Topic discovery (unless `--topic` is supplied) | Searches YouTube for recent videos in the channel niche, ranks public results, asks OpenAI for five distinct ideas, and filters titles/topics against history. | `discovery/<channel>.json` and `discovery/ideas.json`. |
 | Research | Uses OpenAI web search to assemble factual claims, source URLs, support notes, confidence labels, and unresolved questions. | Job folder `research.json`. Each factual claim should link to a source. |
+| Research screenshot references (`--capture-research-screenshots`) | Opens up to three unique public article URLs already cited in research, and captures each page with Playwright/Chromium. It does not scrape Google results. | `assets/research_references/<job-name>/*.png` and `research_screenshots.json`. |
 | Script | Writes long-form narration chunks with claim IDs, tone/energy and visual directions, plus a complete short-form script. | `script.json`. The word-count estimate is only a duration proxy; measure actual narration time before editing. |
 | Asset planning | Converts each scene's visual, music, and SFX needs into provider search requests. Video requests carry the five-second maximum. | `asset_requests.json`, including query, scene, purpose, and candidate-source list. |
 | Asset discovery (`--discover-assets`) | Searches no-key Commons, Internet Archive, Library of Congress, and NASA collections. It adds source candidates and links to the manifest. | `asset_requests.json` updated with `candidates`; discovery alone does not mean rights have been cleared. |
