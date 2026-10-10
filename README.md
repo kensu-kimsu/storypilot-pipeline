@@ -6,6 +6,46 @@ StoryPilot is a Python-assisted production workflow for fact-led YouTube documen
 
 This repository automates **pre-production, Azure or local Fish Speech narration/caption preparation, media acquisition, and the edit handoff**. The `edit` command checks asset readiness, retries missing manifest assets through configured sources, writes `edit_readiness.json`, and blocks if required files remain missing. It still does not render a finished MP4, upload to YouTube, or start/read YouTube's native thumbnail experiment. The FCPXML is an assistant-editor handoff, not a completed or QA-passed video.
 
+## Story-led variable editing
+
+StoryPilot keeps channel identity stable and lets the verified story guide episode and scene choices. The style planner does not rotate cosmetic presets just to make videos look different.
+
+1. **Channel identity:** set a stable font, brand accent colors, caption safe zones, and signature motif in each channel's `visual_brand` object in `channels.json`.
+2. **Episode direction:** the research-backed script asks for a visual mode, the evidence to show, and why that treatment fits each narration chunk. Topic cues select an episode palette while the channel brand remains available as its consistent anchor.
+3. **Scene direction:** each timed segment can select from `minimalist_text`, `split_screen`, `animated_chart`, `document_focus`, `animated_map`, `parallax_portrait`, `kinetic_fact`, and `cinematic_broll`. If the director does not specify a valid mode, StoryPilot chooses within the tone-appropriate options.
+4. **Controlled variation:** cut ranges, camera movement, caption zones, type treatments, transitions, and sound cues respond to the scene tone and energy. Captions retain the configured channel font; their safe-zone placement can move to suit the layout.
+5. **Across-video memory:** the edit command reads and updates `style_history.json` in the production workspace. It tracks recent scene modes per channel and nudges automatic choices away from overused modes. A scene-specific mode from the creative director takes priority over that nudge.
+
+This history helps the edit plan avoid falling into the same visual rhythm. It is not a monetization bypass or a guarantee of YouTube Partner Program approval. Original research, meaningful narration and analysis, topic-specific evidence, and viewer value still matter. The current code writes these decisions into JSON and edit notes; because final MP4 rendering is not implemented, the style, captions, animations, transitions, and audio mix are not yet fully applied to rendered pixels and sound.
+
+### Channel style configuration
+
+Add a `visual_brand` object to each entry in `channels.json`. `channels.example.json` includes a starter profile:
+
+```json
+"visual_brand": {
+  "primary_font": "Montserrat",
+  "caption_font_weight": "bold",
+  "caption_position": "lower_third",
+  "caption_positions": ["lower_third", "top_safe", "center_emphasis"],
+  "brand_accent": "#FFD34E",
+  "brand_secondary": "#C7CEDB",
+  "signature_motif": "subtle documentary grain"
+}
+```
+
+The editor handoff records this identity and each shot's topic palette, visual mode, evidence/rationale, caption position, and text treatment. Current palette selection is a topic heuristic with an optional job-level override. Fonts and overlays are planning metadata; the current FCPXML does not render those overlays.
+
+### Edit planning command
+
+```powershell
+python main_pipeline.py edit `
+  "D:\YouTubeProduction\jobs\job-name\timed_edit_job.json" `
+  --out "D:\YouTubeProduction\jobs\job-name\edit_handoff"
+```
+
+The command automatically uses `D:\YouTubeProduction\style_history.json` based on the timed job's workspace location. To use a different history file, add `--style-history "D:\path\to\style_history.json"`. History records contain channel key, job ID, topic, timestamp, and a compact style signature; they do not store scripts, credentials, or media.
+
 ## Asset sources
 
 | Source | Key needed? | What StoryPilot uses it for |
@@ -117,7 +157,7 @@ That discovery mode needs `YOUTUBE_API_KEY`. YouTube's public counters do not pr
 | Research | Uses OpenAI web search to assemble factual claims, source URLs, support notes, confidence labels, and unresolved questions. | Job folder `research.json`. Each factual claim should link to a source. |
 | Independent fact check | A second OpenAI web-search pass checks each claim against cited and corroborating sources. Only verified or explicitly qualified claims with source URLs are passed to script writing; if none pass, script generation stops. | `research.json` includes `verification_summary`, checked sources, and `verified_claims`. |
 | News headline screenshots (only when requested by the creative brief) | Searches approved major news publishers, captures only the visible article headline, and highlights matching topic terms in yellow. If no scene requests one, it performs no additional news article search. | `assets/screenshots/<job-name>/*.png` and `article_screenshots.json`. |
-| Script | Writes long-form narration chunks with claim IDs, tone/energy and visual directions, plus a complete short-form script. | `script.json`. The word-count estimate is only a duration proxy; measure actual narration time before editing. |
+| Script and visual direction | Writes long-form narration chunks with claim IDs, tone/energy, a story-specific visual mode, evidence to show, and rationale, plus a complete short-form script. | `script.json`. The word-count estimate is only a duration proxy; measure actual narration time before editing. |
 | Narration preparation | Synthesizes each chunk with Azure Speech or a local Fish Speech S2 server, applies delivery direction, and creates English captions. | `narration.wav`, `narration_manifest.json`, `word_timestamps.json`, `captions.srt`, and `timed_edit_job.json`. Azure supplies word boundaries; Fish local currently uses approximate word timing. |
 | Niche creative direction | Loads the matching entry from `niche_prompts.json` for source priorities, story framing, retention beats, and narration delivery. | Five starter profiles: cybersecurity, finance, business, dark history, and future technology. |
 | Asset planning | Converts each scene's visual, music, and SFX needs into provider search requests. Video requests carry the five-second maximum. | `asset_requests.json`, including query, scene, purpose, and candidate-source list. |
@@ -125,7 +165,7 @@ That discovery mode needs `YOUTUBE_API_KEY`. YouTube's public counters do not pr
 | Asset acquisition (`--acquire-assets`) | Reuses matches from the catalog first, then tries Pixabay (if configured) and the public archive adapters. It can generate a clearly labeled illustrative still when no photo matches. It indexes local Audio Library seeds and can try Freesound previews. | `selected_assets.json`; reusable files in shared `assets/` folders; SQLite catalog and JSON sidecars. Unavailable assets are listed under `unresolved`. |
 | Metadata/thumbnails | Writes title hypotheses, description, tags, and two thumbnail briefs. With `--make-thumbnails`, asks OpenAI for two thumbnail images. | `metadata_ab_test.json` plus `thumbnail_1.png` and `thumbnail_2.png` when generation succeeds. |
 | QA helper | `qa_package()` can check package files, claim IDs/URLs, script-length estimate, rights metadata, and optionally supplied final files, but the current CLI does not call it as an automatic gate. | No automatic QA report is produced by the current command. Final video QA is not implemented. |
-| Pre-edit asset check and edit handoff | Verifies referenced files, retries missing manifest items through configured sources, and refuses handoff if required assets or captions remain missing. | `edit_readiness.json`; on success, FCPXML, timeline JSON, and edit notes. This is still an editor handoff, not an MP4. |
+| Pre-edit asset check and edit handoff | Verifies referenced files, retries missing manifest items through configured sources, and refuses handoff if required assets or captions remain missing. Applies channel style, per-scene direction, and recent per-channel style history to its plan. | `edit_readiness.json`; on success, FCPXML, `timeline.json`, `EDIT_NOTES.md`, and updated workspace `style_history.json`. This is still an editor handoff, not an MP4. |
 | Final render and upload | Not implemented in this repository version. | Render the timeline in a compatible editor, verify duration/audio/captions/aspect ratio, then upload privately yourself. |
 
 Each job is written to `jobs/<channel-topic>/`. Typical files are `research.json`, `script.json`, `asset_requests.json`, `selected_assets.json` (when acquisition is run), `metadata_ab_test.json`, optional thumbnail PNGs, and `job.json`.
@@ -155,7 +195,9 @@ The edit stage expects a JSON job that includes timed narration segments, paths 
 python main_pipeline.py edit path/to/timed_edit_job.json --out "D:\YouTubeProduction\jobs\example\edit_handoff"
 ```
 
-The handoff includes a varied shot plan using each segment's tone and energy, subtitle timing, motion/layout notes, and FCPXML. The pre-edit report confirms that requested source files exist. It does not mean every visual treatment is rendered: the FCPXML does not yet burn in the SRT, composite 2.5D layers, animate chart/map graphics, apply all planned transitions, mix selected music/SFX tracks, or export MP4. Those are remaining final-render features.
+The handoff includes a story-led shot plan using each segment's visual direction, tone, energy, channel style, caption position, and edit history, plus subtitle timing and FCPXML. The pre-edit report confirms that requested source files exist. It does not mean every visual treatment is rendered: the FCPXML does not yet burn in the SRT, composite 2.5D layers, animate chart/map graphics, apply all planned transitions, mix selected music/SFX tracks, or export MP4. Those are remaining final-render features. The optional polish focus points in the handoff are not a required human approval gate.
+
+See [WALKTHROUGH.md](WALKTHROUGH.md) for the full production walkthrough, output list, and the current boundary between automated planning and final rendering.
 
 ### Narration with Azure Speech or local Fish Speech
 

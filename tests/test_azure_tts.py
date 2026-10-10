@@ -118,9 +118,9 @@ class AzureTtsTests(unittest.TestCase):
             media.write_bytes(b"image")
             script_path = root / "script.json"
             script_path.write_text(json.dumps({
-                "title_working": "Demo", "narration_chunks": [{"text": "A fact.", "asset_queries": ["portrait"], "tone": "suspense", "sfx_cues": []}]
+                "title_working": "Demo", "narration_chunks": [{"text": "A fact.", "asset_queries": ["portrait"], "tone": "suspense", "visual_mode": "document_focus", "visual_evidence": "A verified court record", "visual_rationale": "Show the original source", "sfx_cues": []}]
             }), encoding="utf-8")
-            (root / "job.json").write_text(json.dumps({"topic": "A topic"}), encoding="utf-8")
+            (root / "job.json").write_text(json.dumps({"topic": "A topic", "channel_id": "@history", "channel": {"handle": "@history", "visual_brand": {"primary_font": "Montserrat"}}}), encoding="utf-8")
             selection_path = root / "selected_assets.json"
             selection_path.write_text(json.dumps({"assets": [{
                 "query": "portrait", "category": "picture", "segment": 1,
@@ -134,6 +134,10 @@ class AzureTtsTests(unittest.TestCase):
             self.assertEqual(timed["topic"], "A topic")
             self.assertEqual(timed["segments"][0]["asset_ids"], ["asset1"])
             self.assertEqual(timed["assets"]["asset1"]["path"], str(media))
+            self.assertEqual(timed["segments"][0]["visual_mode"], "document_focus")
+            self.assertEqual(timed["segments"][0]["visual_evidence"], "A verified court record")
+            self.assertEqual(timed["channel_id"], "@history")
+            self.assertEqual(timed["visual_brand"]["primary_font"], "Montserrat")
 
 
 if __name__ == "__main__":

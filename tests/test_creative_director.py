@@ -6,7 +6,7 @@ from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from creative_director import build_edit_plan, prepare_assets_before_edit, write_fcpxml
+from creative_director import build_edit_plan, build_package, prepare_assets_before_edit, write_fcpxml
 
 
 class CreativeDirectorTests(unittest.TestCase):
@@ -43,6 +43,73 @@ class CreativeDirectorTests(unittest.TestCase):
         self.job["assets"]["portrait"]["rights_status"] = "unknown"
         plan = build_edit_plan(self.job)
         self.assertTrue(any(shot["asset_id"] == "portrait" for shot in plan["shots"]))
+
+    def test_scene_directed_visual_and_channel_brand_are_preserved(self):
+        self.job["visual_brand"] = {
+            "primary_font": "Aptos Display", "brand_accent": "#12ABCD",
+            "caption_position": "lower_third", "caption_positions": ["lower_third", "top_safe"],
+        }
+        self.job["segments"][0].update({
+            "visual_mode": "document_focus",
+            "visual_evidence": "The 1911 Supreme Court dissolution order",
+            "visual_rationale": "The legal document makes the outcome tangible",
+        })
+        plan = build_edit_plan(self.job)
+        first = next(shot for shot in plan["shots"] if shot["segment_index"] == 0)
+        self.assertEqual(first["visual_mode"], "document_focus")
+        self.assertEqual(first["visual_evidence"], "The 1911 Supreme Court dissolution order")
+        self.assertEqual(first["caption_position"], "top_safe")
+        self.assertEqual(plan["visual_brand"]["primary_font"], "Aptos Display")
+        self.assertEqual(plan["visual_brand"]["brand_accent"], "#12ABCD")
+        self.assertEqual(first["style_selection"], "scene_directed")
+
+    def test_recent_channel_style_history_discourages_repeating_modes(self):
+        self.job["channel"] = {"handle": "@historychannel"}
+        self.job["segments"] = [
+            {"start": 0.0, "end": 12.0, "text": "A story beat.", "tone": "standard", "audio_energy": 0.5, "asset_ids": ["portrait"]}
+        ]
+        plan = build_edit_plan(self.job, [{
+            "channel_key": "@historychannel",
+            "signature": {"dominant_modes": ["cinematic_broll"]},
+        }])
+        self.assertNotEqual(plan["shots"][0]["visual_mode"], "cinematic_broll")
+        self.assertEqual(plan["episode_style"]["recent_mode_counts"]["cinematic_broll"], 1)
+
+    def test_type_treatment_and_caption_zone_follow_layout(self):
+        self.job["segments"] = [
+            {"start": 0.0, "end": 12.0, "text": "A story beat.", "tone": "dramatic_realization", "visual_mode": "minimalist_text", "asset_ids": []}
+        ]
+        plan = build_edit_plan(self.job)
+        self.assertTrue(all(shot["caption_position"] == "center_emphasis" for shot in plan["shots"]))
+        self.assertTrue(all(shot["type_treatment"] == "single_statement" for shot in plan["shots"]))
+
+    def test_build_package_persists_one_style_history_row_per_job(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            job_dir = root / "jobs" / "episode-one"
+            job_dir.mkdir(parents=True)
+            narration = job_dir / "narration.wav"
+            narration.write_bytes(b"audio")
+            captions = job_dir / "captions.srt"
+            captions.write_text("1\\n00:00:00,000 --> 00:00:04,000\\nA story beat.\\n", encoding="utf-8")
+            job = {
+                "job_id": "episode-one", "channel_id": "@history", "topic": "A sourced story",
+                "narration_file": str(narration), "narration_duration": 4.0,
+                "captions_required": True, "captions_file": str(captions),
+                "segments": [{"start": 0, "end": 4, "text": "A story beat.", "tone": "standard", "asset_ids": []}],
+                "assets": {},
+            }
+            job_path = job_dir / "timed_edit_job.json"
+            job_path.write_text(json.dumps(job), encoding="utf-8")
+            output = job_dir / "edit_handoff"
+            build_package(job_path, output)
+            history_path = root / "style_history.json"
+            saved = json.loads(history_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(saved["videos"]), 1)
+            self.assertEqual(saved["videos"][0]["channel_key"], "@history")
+            build_package(job_path, output)
+            saved = json.loads(history_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(saved["videos"]), 1)
 
     def test_fcpxml_is_well_formed_and_contains_storyline_and_shots(self):
         plan = build_edit_plan(self.job)

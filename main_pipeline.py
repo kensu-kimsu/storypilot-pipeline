@@ -23,9 +23,10 @@ def main() -> None:
     pre.add_argument("--make-thumbnails", action="store_true")
     pre.add_argument("--acquire-assets", action="store_true")
     pre.add_argument("--youtube-audio-library-dir", type=Path)
-    edit = sub.add_parser("edit", help="Build FCPXML/JSON assistant-editor handoff")
+    edit = sub.add_parser("edit", help="Build story-led FCPXML/JSON assistant-editor handoff")
     edit.add_argument("job_json", type=Path, help="Timed narration segments and approved local asset manifest")
     edit.add_argument("--out", type=Path, required=True, help="Directory for the timeline handoff")
+    edit.add_argument("--style-history", type=Path, help="Cross-video style history JSON (defaults to workspace/style_history.json)")
     setup = sub.add_parser("setup-apis", help="Create the workspace and configure API keys")
     setup.add_argument("--base-dir", type=Path, required=True, help="Production workspace and local secrets-file directory")
     args = parser.parse_args()
@@ -56,10 +57,11 @@ def main() -> None:
             sys.argv += ["--youtube-audio-library-dir", str(args.youtube_audio_library_dir)]
         preproduction_main()
         return
-    plan = build_package(args.job_json, args.out)
+    plan = build_package(args.job_json, args.out, args.style_history)
     print(f"Handoff ready: {args.out.resolve()}")
     print(f"Planned {len(plan['shots'])} shots for {plan['duration']:.1f}s")
-    print("Next: make the creative polish pass, export the master, then run final QA/upload.")
+    print(f"Channel style identity: {plan['visual_brand'].get('primary_font')} / {plan['visual_brand'].get('brand_accent')}")
+    print("The timeline plan and style history are ready. This command does not render an MP4 or upload it.")
 
 
 if __name__ == "__main__":

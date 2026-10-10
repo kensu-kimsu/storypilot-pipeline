@@ -47,11 +47,16 @@ class PrePostPipelineTests(unittest.TestCase):
         def fake_response(prompt, **kwargs):
             captured["prompt"] = prompt
             return {"output_text": json.dumps(script)}
+        channel = {"niche": "business", "visual_brand": {"primary_font": "Montserrat", "brand_accent": "#FFD34E"}}
         with patch("prepost_pipeline.openai_response", side_effect=fake_response):
-            result = write_script("Example", {"niche": "business"}, research, get_niche_config("business"))
+            result = write_script("Example", channel, research, get_niche_config("business"))
         self.assertIn("truthful story promise", captured["prompt"])
+        self.assertIn("visual_evidence", captured["prompt"])
+        self.assertIn("Choose it because it expresses the verified evidence", captured["prompt"])
+        self.assertIn("Montserrat", captured["prompt"])
         self.assertIn("English", captured["prompt"])
         self.assertEqual(result["voice_name"], "en-US-Ethan:MAI-Voice-2.1")
+        self.assertEqual(result["visual_brand"], channel["visual_brand"])
         self.assertFalse(result["narration_audio_generated"])
         self.assertFalse(result["unsupported_claim_ids"])
 
@@ -74,12 +79,17 @@ class PrePostPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             manifest = asset_research({"narration_chunks": [{
                 "visual_note": "Show an oil refinery at dusk",
+                "visual_mode": "document_focus",
+                "visual_evidence": "A dated refinery expansion record",
+                "visual_rationale": "Connect the facility image to the documented expansion",
                 "asset_queries": ["historical refinery", "oil pipeline map"],
                 "music_mood": "low tension orchestral", "sfx_cues": ["paper rustle", "deep impact"]
             }]}, Path(temp))
             categories = [asset["category"] for asset in manifest["assets"]]
             self.assertEqual(categories, ["video", "picture", "music", "sfx", "sfx"])
             self.assertEqual(manifest["assets"][0]["max_duration_seconds"], 5)
+            self.assertEqual(manifest["assets"][0]["visual_mode"], "document_focus")
+            self.assertEqual(manifest["assets"][0]["visual_evidence"], "A dated refinery expansion record")
 
     def test_news_headline_search_is_skipped_when_creative_brief_does_not_request_it(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -20,6 +20,7 @@ production/
 rendered_outputs/
 temp_assets/
 assets/
+style_history.json
 *.mp4
 *.mov
 *.mkv

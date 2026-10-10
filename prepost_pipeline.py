@@ -424,9 +424,10 @@ Retention design: {niche_config.get('retention_guidance', '')}
 Maintain attention from the first line through the ending: open on a specific verified moment or question; state a truthful story promise early; build in clear acts where each section adds evidence, changes the stakes, or corrects an earlier assumption; pay off every major question. Add meaningful re-hooks about every 2-3 minutes, but never use fake cliffhangers, repeat the same teaser, or withhold basic facts merely to inflate watch time. Remove repeated exposition and filler. The ending must resolve the central story, then offer a natural reason to watch another episode without an artificial cliffhanger.
 Write for a natural human narrator using English. Keep sentences speakable and varied, use contractions where natural, and avoid stiff transitions, repeated rhetorical questions, forced slang, and overly polished essay language. Never put performance directions inside the words to be spoken. The narrator should follow the emotion and tone assigned to each scene; let intensity rise and fall with the evidence rather than reading every line dramatically.
 For each narration chunk, give a `tone` that the creative director can use, plus `delivery_emotion`, `delivery_pace`, `vocal_intensity` from 0.0 to 1.0, and `pause_after_seconds`. These fields guide a future TTS/narrator pass; do not write the audio itself. Overall narration direction: {narration_direction}
+Act as the visual creative director too. For each chunk choose one `visual_mode` from `minimalist_text`, `split_screen`, `animated_chart`, `document_focus`, `animated_map`, `parallax_portrait`, `kinetic_fact`, or `cinematic_broll`. Choose it because it expresses the verified evidence in that scene, not to create random variation. Add `visual_evidence`, naming the exact verified detail or source visual that should appear, and `visual_rationale`, explaining why the visual mode suits the beat. Make asset queries scene-specific and avoid generic stock searches where a document, map, chart, or relevant subject image would tell the story better. Use channel branding consistently: {json.dumps(channel.get('visual_brand', {}), ensure_ascii=False)}. Keep its font and brand colors stable; use topic palette and layout changes only when they serve this episode's story. Never invent a chart, map, document, or evidence image.
 For each narration chunk, decide whether a real news headline is creatively necessary. Normally set "news_article_screenshot": null. Request one only when an actual news headline materially strengthens the scene (for example, showing contemporaneous media coverage of a major event). Do not request generic headlines or decorative screenshots; request at most two total. When needed, set {{"search_query":"specific article/story query","highlight_keywords":["one or two exact headline terms"],"reason":"why the headline itself helps this scene"}}.
 Research ledger (only these verified claims may support factual narration): {json.dumps(claims, ensure_ascii=False)}
-Return strict JSON {{"title_working":"...","logline":"...","narration_direction":"...","voice_name":"{voice_name}","narration_chunks":[{{"section_title":"...","text":"...","claim_ids":["C1"],"tone":"...","delivery_emotion":"...","delivery_pace":"measured|brisk|slow","vocal_intensity":0.5,"pause_after_seconds":0.5,"audio_energy":0.5,"retention_function":"...","visual_note":"...","asset_queries":["..."],"news_article_screenshot":null,"music_mood":"...","sfx_cues":["..."]}}],"shorts_script":{{"text":"standalone complete 30-second short, about 60-75 words","hook":"...","payoff":"...","claim_ids":["C1"],"narration_direction":"..."}}}}."""
+Return strict JSON {{"title_working":"...","logline":"...","narration_direction":"...","voice_name":"{voice_name}","narration_chunks":[{{"section_title":"...","text":"...","claim_ids":["C1"],"tone":"...","delivery_emotion":"...","delivery_pace":"measured|brisk|slow","vocal_intensity":0.5,"pause_after_seconds":0.5,"audio_energy":0.5,"retention_function":"...","visual_mode":"one allowed mode","visual_evidence":"specific verified story detail to show","visual_rationale":"why this treatment fits the beat","visual_note":"...","asset_queries":["..."],"news_article_screenshot":null,"music_mood":"...","sfx_cues":["..."]}}],"shorts_script":{{"text":"standalone complete 30-second short, about 60-75 words","hook":"...","payoff":"...","claim_ids":["C1"],"narration_direction":"..."}}}}."""
     script = parse_json_text(response_text(openai_response(prompt)))
     claim_ids = {c.get("claim_id") for c in claims}
     used = {cid for chunk in script.get("narration_chunks", []) for cid in chunk.get("claim_ids", [])}
@@ -436,6 +437,7 @@ Return strict JSON {{"title_working":"...","logline":"...","narration_direction"
     script["target_met_estimate"] = script["approx_word_count"] >= 2500
     script.setdefault("narration_direction", narration_direction)
     script.setdefault("voice_name", voice_name)
+    script["visual_brand"] = channel.get("visual_brand", {})
     script["narration_audio_generated"] = False
     return script
 
@@ -452,7 +454,10 @@ def asset_research(script: dict, out_dir: Path) -> dict:
             seen.add(key)
             requests_list.append({"asset_id": f"asset_{len(requests_list)+1:03d}", "query": query,
                                  "category": category, "segment": i,
-                                 "purpose": chunk.get("visual_note", "Support the narration in this section"),
+                                 "purpose": chunk.get("visual_rationale") or chunk.get("visual_note", "Support the narration in this section"),
+                                 "visual_mode": chunk.get("visual_mode"),
+                                 "visual_evidence": chunk.get("visual_evidence"),
+                                 "visual_rationale": chunk.get("visual_rationale"),
                                  "suggested_sources": ["Pixabay API", "Wikimedia Commons (no key)", "Internet Archive (no key)", "Library of Congress (no key)", "NASA Image and Video Library (no key)", "official company newsroom"],
                                  "source_url": None, "local_path": None,
                                  "rights_status": "unknown", "max_duration_seconds": 5 if category == "video" else None,
@@ -536,9 +541,10 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
     _write(out / "research.json", research)
     _write(out / "script.json", script)
     _write(out / "metadata_ab_test.json", metadata)
-    _write(out / "job.json", {"job_id": job_id, "channel": channel, "topic": topic, "status": "preproduction_ready",
+    _write(out / "job.json", {"job_id": job_id, "channel": channel, "channel_id": channel.get("channel_id"),
+                                 "visual_brand": channel.get("visual_brand", {}), "topic": topic, "status": "preproduction_ready",
                                  "research_file": "research.json", "script_file": "script.json", "asset_manifest": "asset_requests.json",
-                                 "metadata_file": "metadata_ab_test.json", "human_polish_required": True})
+                                 "metadata_file": "metadata_ab_test.json", "human_polish_required": False})
     if generate_thumbnails:
         for index, concept in enumerate(metadata.get("thumbnail_briefs", [])[:2], 1):
             image_prompt = f"YouTube documentary thumbnail, 16:9 composition, high contrast, topic: {topic}. {concept.get('composition','')}. Visual idea: {concept.get('concept','')}. Leave clear negative space for short text: {concept.get('text','')}. Avoid logos and tiny text."

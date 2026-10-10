@@ -6,6 +6,15 @@
     "niche": "business history documentaries",
     "audience": "viewers interested in company history and finance",
     "tone": "cinematic, fact-led, curious",
-    "voice_name": "en-US-Ethan:MAI-Voice-2.1"
+    "voice_name": "en-US-Ethan:MAI-Voice-2.1",
+    "visual_brand": {
+      "primary_font": "Montserrat",
+      "caption_font_weight": "bold",
+      "caption_position": "lower_third",
+      "caption_positions": ["lower_third", "top_safe", "center_emphasis"],
+      "brand_accent": "#FFD34E",
+      "brand_secondary": "#C7CEDB",
+      "signature_motif": "subtle documentary grain"
+    }
   }
 ]

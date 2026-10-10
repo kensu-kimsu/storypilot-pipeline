@@ -1,4 +1,4 @@
-"""Create a creatively varied, editable documentary timeline package.
+"""Create a story-led, creatively varied, editable documentary timeline package.
 
 This module plans and exports an edit. It deliberately does not render or upload a
 finished video: the FCPXML/JSON outputs are the assistant-editor handoff for a
@@ -37,6 +37,26 @@ TONE_MODES = {
     "suspense": ["minimalist_text", "parallax_portrait", "cinematic_broll"],
     "transition": ["cinematic_broll", "animated_map", "kinetic_fact"],
     "standard": ["cinematic_broll", "parallax_portrait", "document_focus", "kinetic_fact"],
+}
+
+VALID_VISUAL_MODES = {mode for modes in TONE_MODES.values() for mode in modes}
+TYPE_TREATMENTS = {
+    "minimalist_text": "single_statement",
+    "split_screen": "comparison_labels",
+    "animated_chart": "data_callout",
+    "document_focus": "document_annotation",
+    "animated_map": "map_label",
+    "parallax_portrait": "name_or_date",
+    "kinetic_fact": "short_phrase_emphasis",
+    "cinematic_broll": "restrained_lower_third",
+}
+DEFAULT_VISUAL_BRAND = {
+    "primary_font": "Montserrat",
+    "caption_font_weight": "bold",
+    "caption_position": "lower_third",
+    "brand_accent": "#FFD34E",
+    "brand_secondary": "#C7CEDB",
+    "signature_motif": "subtle documentary grain",
 }
 
 
@@ -137,7 +157,46 @@ def _candidate_asset_ids(segment: dict, assets: dict[str, dict], mode: str) -> l
     return candidates
 
 
-def build_edit_plan(job: dict) -> dict:
+def _channel_key(job: dict) -> str:
+    channel = job.get("channel", {})
+    return str(job.get("channel_id") or channel.get("channel_id") or channel.get("handle") or "default")
+
+
+def _brand_identity(job: dict) -> dict:
+    channel = job.get("channel", {})
+    configured = job.get("visual_brand") or channel.get("visual_brand") or {}
+    brand = dict(DEFAULT_VISUAL_BRAND)
+    brand.update({key: value for key, value in configured.items() if value not in (None, "")})
+    brand["caption_positions"] = configured.get(
+        "caption_positions", [brand["caption_position"], "top_safe", "center_emphasis"]
+    )
+    return brand
+
+
+def _recent_mode_counts(style_history: list[dict] | None, channel_key: str) -> dict[str, int]:
+    rows = [row for row in (style_history or []) if row.get("channel_key") == channel_key]
+    counts: dict[str, int] = {}
+    for row in rows[-5:]:
+        signature = row.get("signature", {})
+        for mode in signature.get("dominant_modes", []):
+            counts[mode] = counts.get(mode, 0) + 1
+    return counts
+
+
+def _select_mode(rng: random.Random, segment: dict, choices: list[str], recent_counts: dict[str, int]) -> tuple[str, str]:
+    """Use the director's scene choice when supplied; otherwise vary within tone-fit options."""
+    requested = str(segment.get("visual_mode", "")).strip()
+    if requested in choices:
+        return requested, "scene_directed"
+    if requested in VALID_VISUAL_MODES and requested not in choices:
+        # Respect an explicit creative choice when it is an established treatment.
+        return requested, "scene_directed"
+    lowest_use = min(recent_counts.get(mode, 0) for mode in choices)
+    fresh_choices = [mode for mode in choices if recent_counts.get(mode, 0) == lowest_use]
+    return rng.choice(fresh_choices), "tone_led_variation"
+
+
+def build_edit_plan(job: dict, style_history: list[dict] | None = None) -> dict:
     required = {"job_id", "topic", "narration_file", "narration_duration", "segments", "assets"}
     missing = sorted(required - set(job))
     if missing:
@@ -148,6 +207,9 @@ def build_edit_plan(job: dict) -> dict:
     rng = random.Random(_stable_seed(str(job["job_id"])))
     assets = job["assets"]
     palette = choose_palette(job["topic"], job.get("palette"))
+    brand = _brand_identity(job)
+    channel_key = _channel_key(job)
+    recent_counts = _recent_mode_counts(style_history, channel_key)
     duration_total = float(job["narration_duration"])
     ordered_segments = sorted(job["segments"], key=lambda item: float(item["start"]))
     cursor = 0.0
@@ -177,9 +239,9 @@ def build_edit_plan(job: dict) -> dict:
         if segment.get("available_modes"):
             allowed = set(segment["available_modes"])
             choices = [mode for mode in choices if mode in allowed] or ["cinematic_broll"]
-        if previous_mode in choices and len(choices) > 1:
+        if previous_mode in choices and len(choices) > 1 and not segment.get("visual_mode"):
             choices.remove(previous_mode)
-        mode = rng.choice(choices)
+        mode, selection_reason = _select_mode(rng, segment, choices, recent_counts)
         previous_mode = mode
         low, high = _duration_range(tone, energy)
         usable_assets = _candidate_asset_ids(segment, assets, mode)
@@ -213,11 +275,16 @@ def build_edit_plan(job: dict) -> dict:
                 "tone": tone,
                 "audio_energy": round(energy, 3),
                 "visual_mode": shot_mode,
+                "visual_evidence": segment.get("visual_evidence", ""),
+                "visual_rationale": segment.get("visual_rationale", segment.get("visual_note", "")),
+                "style_selection": selection_reason,
                 "asset_id": asset_id,
                 "asset_path": asset.get("path"),
                 "asset_kind": asset.get("kind", "generated_placeholder" if asset_id is None else "video"),
                 "overlay_text": segment.get("overlay_text", ""),
                 "palette": palette,
+                "caption_position": segment.get("caption_position") or _caption_position(brand, shot_mode),
+                "type_treatment": TYPE_TREATMENTS.get(shot_mode, "restrained_lower_third"),
                 "camera": _camera_motion(rng, shot_mode),
                 "transition_out": rng.choice(["hard_cut", "short_dissolve", "match_cut", "whip_pan"]),
                 "sfx_cue": rng.choice(segment.get("sfx_candidates", ["paper_rustle", "camera_shutter", "low_impact", "none"])),
@@ -242,6 +309,16 @@ def build_edit_plan(job: dict) -> dict:
         ),
         reverse=True,
     )[: min(5, len(output))]
+    mode_counts: dict[str, int] = {}
+    for shot in output:
+        mode_counts[shot["visual_mode"]] = mode_counts.get(shot["visual_mode"], 0) + 1
+    signature = {
+        "palette_family": _palette_family(palette),
+        "dominant_modes": [mode for mode, _ in sorted(mode_counts.items(), key=lambda item: (-item[1], item[0]))[:3]],
+        "caption_positions": sorted({shot["caption_position"] for shot in output}),
+        "primary_font": brand["primary_font"],
+        "signature_motif": brand["signature_motif"],
+    }
     return {
         "job_id": job["job_id"],
         "topic": job["topic"],
@@ -249,12 +326,37 @@ def build_edit_plan(job: dict) -> dict:
         "canvas": job.get("canvas", {"width": 1920, "height": 1080, "fps": 30}),
         "duration": duration_total,
         "palette": palette,
+        "channel_key": channel_key,
+        "visual_brand": brand,
+        "episode_style": {
+            "selection_principle": "story_and_tone_first",
+            "topic_palette_family": signature["palette_family"],
+            "signature": signature,
+            "recent_mode_counts": recent_counts,
+        },
         "random_seed": _stable_seed(str(job["job_id"])),
         "narration_file": str(Path(job["narration_file"]).resolve()),
         "shots": output,
+        "optional_polish_targets": [s["shot_id"] for s in polish],
         "human_polish_targets": [s["shot_id"] for s in polish],
         "workflow": "assistant_editor_handoff",
     }
+
+
+def _caption_position(brand: dict, mode: str) -> str:
+    """Keep captions in brand-approved safe zones; reserve center for intentional emphasis."""
+    if mode == "minimalist_text":
+        return "center_emphasis"
+    if mode in {"document_focus", "animated_chart", "split_screen"}:
+        return "top_safe" if "top_safe" in brand.get("caption_positions", []) else brand["caption_position"]
+    return brand["caption_position"]
+
+
+def _palette_family(palette: dict) -> str:
+    for name, known in PALETTES.items():
+        if palette.get("accent", "").lower() == known["accent"].lower():
+            return name
+    return "custom"
 
 
 def _editor_note(mode: str, segment: dict) -> str:
@@ -400,23 +502,26 @@ def write_editor_notes(path: Path, plan: dict) -> None:
         f"# Edit handoff: {plan['topic']}",
         "",
         "This is an editable assistant-editor timeline. It is not a final rendered MP4.",
-        "Import the FCPXML into Final Cut Pro or a compatible editor, review the human-polish targets, make creative changes, then export the final master.",
+        "Import the FCPXML into Final Cut Pro or a compatible editor. The listed polish targets are optional editorial focus points, not a required review gate.",
         "",
         f"- Planned duration: {plan['duration']:.1f} seconds",
         f"- Canvas: {plan['canvas']['width']}×{plan['canvas']['height']} at {plan['canvas']['fps']} fps",
         f"- Palette: {plan['palette']}",
-        f"- Stable variation seed: `{plan['random_seed']}`",
+        f"- Story-led style selection: `{plan['episode_style']['selection_principle']}`",
+        f"- Channel identity: {plan['visual_brand']}",
+        f"- Recent style history considered: `{plan['episode_style']['recent_mode_counts']}`",
         "- Source and license metadata are preserved in the asset manifest.",
         "",
-        "## Priority human polish pass",
+        "## Optional polish focus points",
         "",
     ]
     for shot_id in plan["human_polish_targets"]:
         shot = next(item for item in plan["shots"] if item["shot_id"] == shot_id)
         lines.append(f"- `{shot_id}` at {shot['start']:.2f}s: {shot['tone']} / {shot['visual_mode']} — {shot['editor_note']}")
-    lines += ["", "## Full shot list", "", "| In | Duration | Tone | Mode | Asset | Editor direction |", "|---:|---:|---|---|---|---|"]
+    lines += ["", "## Full shot list", "", "| In | Duration | Tone | Mode | Evidence / rationale | Captions | Asset | Editor direction |", "|---:|---:|---|---|---|---|---|---|"]
     for s in plan["shots"]:
-        lines.append(f"| {s['start']:.2f}s | {s['duration']:.2f}s | {s['tone']} | {s['visual_mode']} | {s['asset_id'] or 'placeholder'} | {s['editor_note']} |")
+        evidence = (s.get("visual_evidence") or s.get("visual_rationale") or "").replace("|", "\\|")
+        lines.append(f"| {s['start']:.2f}s | {s['duration']:.2f}s | {s['tone']} | {s['visual_mode']} | {evidence} | {s['caption_position']} / {s['type_treatment']} | {s['asset_id'] or 'placeholder'} | {s['editor_note']} |")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -521,7 +626,36 @@ def write_fcpxml(path: Path, plan: dict, assets: dict[str, dict]) -> None:
     ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
 
 
-def build_package(job_path: Path, output_dir: Path) -> dict:
+def _load_style_history(path: Path | None) -> list[dict]:
+    if path is None or not path.is_file():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(payload, list):
+        return payload
+    return payload.get("videos", []) if isinstance(payload, dict) else []
+
+
+def _save_style_history(path: Path, history: list[dict], plan: dict) -> None:
+    from datetime import datetime, timezone
+
+    history = [row for row in history if row.get("job_id") != plan["job_id"]]
+    history.append({
+        "job_id": plan["job_id"],
+        "channel_key": plan["channel_key"],
+        "topic": plan["topic"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "signature": plan["episode_style"]["signature"],
+    })
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps({"version": 1, "videos": history[-100:]}, indent=2, ensure_ascii=False), encoding="utf-8")
+    temp_path.replace(path)
+
+
+def build_package(job_path: Path, output_dir: Path, style_history_path: Path | None = None) -> dict:
     job = json.loads(job_path.read_text(encoding="utf-8"))
     prepare_assets_before_edit(job, job_path, output_dir / "edit_readiness.json")
     # Stop on unresolved ids rather than silently creating visual placeholders.
@@ -540,13 +674,19 @@ def build_package(job_path: Path, output_dir: Path) -> dict:
     if not narration_path.is_file():
         raise FileNotFoundError(f"Narration file is missing: {narration_path}")
 
-    plan = build_edit_plan(job)
+    if style_history_path is None:
+        parents = job_path.resolve().parents
+        style_history_path = parents[2] / "style_history.json" if len(parents) > 2 else None
+    history = _load_style_history(style_history_path)
+    plan = build_edit_plan(job, history)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_json(output_dir / "timeline.json", plan)
     write_editor_notes(output_dir / "EDIT_NOTES.md", plan)
     write_fcpxml(output_dir / "assistant_edit.fcpxml", plan, job["assets"])
     # Copy the input manifest into the package for provenance and repeatability.
     write_json(output_dir / "job_manifest.json", job)
+    if style_history_path is not None:
+        _save_style_history(style_history_path, history, plan)
     return plan
 
 
@@ -554,10 +694,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build a varied, editable video timeline package")
     parser.add_argument("job_json", type=Path)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--style-history", type=Path, help="Cross-video style history JSON (defaults to workspace/style_history.json)")
     args = parser.parse_args()
-    plan = build_package(args.job_json, args.out)
+    plan = build_package(args.job_json, args.out, args.style_history)
     print(f"Created assistant-editor package: {args.out.resolve()}")
-    print(f"Shots: {len(plan['shots'])}; human polish targets: {len(plan['human_polish_targets'])}")
+    print(f"Shots: {len(plan['shots'])}; optional polish focus points: {len(plan['optional_polish_targets'])}")
     print("No final MP4 was rendered or uploaded.")
 
 

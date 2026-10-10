@@ -402,6 +402,9 @@ def build_timed_edit_job(script_path: Path, narration: dict, assets_manifest_pat
         segments.append({
             "start": timing["start"], "end": timing["end"], "text": chunk.get("text", ""),
             "tone": chunk.get("tone", "standard"), "audio_energy": chunk.get("audio_energy", 0.5),
+            "visual_mode": chunk.get("visual_mode", ""),
+            "visual_evidence": chunk.get("visual_evidence", ""),
+            "visual_rationale": chunk.get("visual_rationale", ""),
             "overlay_text": chunk.get("overlay_text", ""), "visual_note": chunk.get("visual_note", ""),
             "asset_ids": visual_ids, "asset_queries": chunk.get("asset_queries", []),
             "sfx_candidates": chunk.get("sfx_cues", []), "sfx_asset_ids": sfx_ids,
@@ -435,9 +438,14 @@ def build_timed_edit_job(script_path: Path, narration: dict, assets_manifest_pat
         })
     job_data_path = script_path.parent / "job.json"
     job_data = json.loads(job_data_path.read_text(encoding="utf-8")) if job_data_path.exists() else {}
+    channel = job_data.get("channel", {})
+    format_name = script.get("format", job_data.get("format", "long_form"))
+    canvas = script.get("canvas") or ({"width": 1080, "height": 1920, "fps": 30} if format_name == "short_form" else {"width": 1920, "height": 1080, "fps": 30})
     return {
         "job_id": script_path.parent.name, "topic": job_data.get("topic", script.get("title_working", script_path.parent.name)),
-        "format": script.get("format", "long_form"),
+        "channel_id": job_data.get("channel_id") or channel.get("channel_id") or channel.get("handle"),
+        "channel": channel, "visual_brand": job_data.get("visual_brand") or channel.get("visual_brand", {}),
+        "format": format_name, "canvas": canvas,
         "narration_file": narration["audio_file"], "narration_duration": narration["duration_seconds"],
         "captions_file": narration["caption_file"], "word_timestamps_file": narration["word_timestamps_file"],
         "assets_manifest": str(assets_manifest_path.resolve()) if assets_manifest_path else None,
