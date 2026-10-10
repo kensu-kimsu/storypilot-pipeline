@@ -18,7 +18,7 @@ from prepost_pipeline import (
 class PrePostPipelineTests(unittest.TestCase):
     def test_niche_profiles_supply_australian_voice_and_retention_guidance(self):
         config = get_niche_config("Australian business history documentaries")
-        self.assertEqual(config["voice_name"], "en-AU-WilliamNeural")
+        self.assertEqual(config["voice_name"], "en-AU-Isla:MAI-Voice-2.1")
         self.assertIn("pay off", config["retention_guidance"])
         self.assertIn("filings", config["research_prompt"])
 
@@ -51,7 +51,7 @@ class PrePostPipelineTests(unittest.TestCase):
             result = write_script("Example", {"niche": "business"}, research, get_niche_config("business"))
         self.assertIn("truthful story promise", captured["prompt"])
         self.assertIn("Australian English", captured["prompt"])
-        self.assertEqual(result["voice_name"], "en-AU-WilliamNeural")
+        self.assertEqual(result["voice_name"], "en-AU-Isla:MAI-Voice-2.1")
         self.assertFalse(result["narration_audio_generated"])
         self.assertFalse(result["unsupported_claim_ids"])
 
