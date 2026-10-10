@@ -16,8 +16,6 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus
-
 from workspace_setup import configure_api_keys, ensure_workspace
 
 try:
@@ -189,7 +187,7 @@ def asset_research(script: dict, out_dir: Path) -> dict:
             requests_list.append({"asset_id": f"asset_{len(requests_list)+1:03d}", "query": query,
                                  "category": category, "segment": i,
                                  "purpose": chunk.get("visual_note", "Support the narration in this section"),
-                                 "suggested_sources": ["Pixabay API", "Google Images discovery", "YouTube discovery", "Wikimedia Commons", "Library of Congress", "NASA Image and Video Library"],
+                                 "suggested_sources": ["Pixabay API", "Wikimedia Commons (no key)", "Internet Archive (no key)", "Library of Congress (no key)", "NASA Image and Video Library (no key)", "official company newsroom"],
                                  "source_url": None, "local_path": None,
                                  "rights_status": "unknown", "max_duration_seconds": 5 if category == "video" else None,
                                  "license_evidence": None, "download_status": "not_downloaded"})
@@ -212,44 +210,14 @@ def asset_research(script: dict, out_dir: Path) -> dict:
 
 
 def search_asset_sources(ledger_path: Path, *, max_results: int = 3) -> dict:
-    """Attach candidate source URLs from Pixabay and Google CSE.
-
-    Results are candidates only. This function does not download YouTube or
-    Google-hosted media and never changes rights_status from unknown.
-    """
+    """Attach candidates from Wikimedia Commons, IA, LOC and NASA (no keys)."""
     ledger = _json(ledger_path, {"assets": []})
-    pixabay_key = os.environ.get("PIXABAY_API_KEY")
-    cse_key, cse_cx = os.environ.get("GOOGLE_CSE_API_KEY"), os.environ.get("GOOGLE_CSE_CX")
+    from media_library import MediaLibrary
+    library = MediaLibrary(ledger_path.parents[2] / "assets")
     for asset in ledger.get("assets", []):
         if asset.get("category") not in {"picture", "video"}:
             continue
-        query = asset["query"]
-        candidates = []
-        if pixabay_key:
-            _require_requests()
-            for endpoint, kind in (("videos", "video"), ("", "image")):
-                url = "https://pixabay.com/api/" if not endpoint else f"https://pixabay.com/api/{endpoint}/"
-                try:
-                    res = HTTP.get(url, params={"key": pixabay_key, "q": query, "per_page": max_results, "safesearch": "true"}, timeout=30)
-                    res.raise_for_status()
-                    for hit in res.json().get("hits", [])[:max_results]:
-                        media = hit.get("videos", {}).get("medium", {}) if kind == "video" else hit
-                        candidates.append({"source": "pixabay", "kind": kind, "page_url": hit.get("pageURL"),
-                                           "preview_url": media.get("url") or hit.get("webformatURL"),
-                                           "creator": hit.get("user"), "license_url": "https://pixabay.com/service/license-summary/"})
-                except requests.RequestException:
-                    continue
-        if cse_key and cse_cx:
-            _require_requests()
-            try:
-                res = HTTP.get("https://www.googleapis.com/customsearch/v1", params={"key": cse_key, "cx": cse_cx, "q": query, "searchType": "image", "num": min(max_results, 10)}, timeout=30)
-                res.raise_for_status()
-                for hit in res.json().get("items", []):
-                    candidates.append({"source": "google_images_discovery", "kind": "image", "page_url": hit.get("image", {}).get("contextLink"),
-                                       "preview_url": hit.get("link"), "title": hit.get("title"), "rights_status": "unknown"})
-            except requests.RequestException:
-                pass
-        asset["candidates"] = candidates
+        asset["candidates"] = library.search_public_archives(asset["query"], asset["category"], limit=max_results)
     _write(ledger_path, ledger)
     return ledger
 
@@ -284,8 +252,6 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
     research = research_story(topic, channel)
     script = write_script(topic, channel, research)
     assets = asset_research(script, out)
-    if os.environ.get("PIXABAY_API_KEY") or (os.environ.get("GOOGLE_CSE_API_KEY") and os.environ.get("GOOGLE_CSE_CX")):
-        assets = search_asset_sources(out / "asset_requests.json")
     metadata = make_metadata(topic, channel, script)
     _write(out / "research.json", research)
     _write(out / "script.json", script)
@@ -337,8 +303,8 @@ def main() -> None:
     parser.add_argument("--channel", help="Channel handle to process")
     parser.add_argument("--topic", help="Skip discovery and prepare this topic")
     parser.add_argument("--make-thumbnails", action="store_true", help="Call the configured OpenAI image model")
-    parser.add_argument("--discover-assets", action="store_true", help="Search configured Pixabay/Google CSE APIs for candidate URLs")
-    parser.add_argument("--acquire-assets", action="store_true", help="Download/reuse Pixabay visuals, generate missing stills, and match local audio")
+    parser.add_argument("--discover-assets", action="store_true", help="Search Pixabay and public archives for candidate URLs")
+    parser.add_argument("--acquire-assets", action="store_true", help="Download/reuse Pixabay or public archive visuals, generate missing stills, and match local audio")
     parser.add_argument("--youtube-audio-library-dir", type=Path, help="Folder containing downloaded YouTube Audio Library files; expected subfolders background_music/ and sfx/")
     args = parser.parse_args()
     workspace = ensure_workspace(args.base_dir)
