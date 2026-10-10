@@ -283,6 +283,11 @@ class MediaLibrary:
             assets = asset_payload.get("collection", {}).get("items", [])
             accepted = {".mp4"} if category == "video" else {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
             direct = next((entry.get("href") for entry in assets if Path(urlparse(entry.get("href", "")).path).suffix.lower() in accepted), None)
+            if not direct:
+                # NASA's `~orig` media URLs often have no file extension; the
+                # response Content-Type is checked before the download is saved.
+                direct = next((entry.get("href") for entry in assets
+                    if entry.get("href") and not urlparse(entry["href"]).path.lower().endswith((".json", ".vtt", ".srt"))), None)
             if direct:
                 results.append({"download_url": direct, "source_url": f"https://images.nasa.gov/details/{nasa_id}",
                     "title": data.get("title") or nasa_id, "creator": data.get("center"),
