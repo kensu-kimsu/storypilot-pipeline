@@ -15,7 +15,7 @@ from typing import Any
 from xml.sax.saxutils import escape
 
 
-DEFAULT_EXPRESSIVE_AU_VOICE = "en-AU-Isla:MAI-Voice-2.1"
+DEFAULT_EXPRESSIVE_VOICE = "en-US-Ethan:MAI-Voice-2.1"
 SUPPORTED_MAI_STYLES = {
     "angry", "confused", "embarrassed", "excited", "jealous", "hopeful",
     "regretful", "relieved", "sad", "softvoice", "surprised", "joyful",
@@ -66,8 +66,8 @@ def build_ssml(text: str, *, voice: str, emotion: str = "neutral", tone: str = "
             f'<mstts:express-as style="{style}"><prosody rate="{_speech_rate(pace)}">'
             f'{safe_text}</prosody></mstts:express-as></voice></speak>'
         )
-    # Standard voices such as en-AU-WilliamNeural don't expose the MAI emotion
-    # styles. Use restrained pacing and punctuation-friendly SSML instead.
+    # Standard neural voices do not expose the MAI emotion styles. Use restrained
+    # pacing and punctuation-friendly SSML instead.
     return (
         '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
         f'xml:lang="{locale}"><voice name="{html.escape(voice, quote=True)}">'
@@ -148,7 +148,7 @@ def synthesize_script(script_path: Path, output_dir: Path, *, voice: str | None 
     chunks = payload.get("narration_chunks", [])
     if not chunks:
         raise ValueError("script.json has no narration_chunks")
-    chosen_voice = voice or os.getenv("AZURE_TTS_VOICE") or payload.get("voice_name") or DEFAULT_EXPRESSIVE_AU_VOICE
+    chosen_voice = voice or os.getenv("AZURE_TTS_VOICE") or payload.get("voice_name") or DEFAULT_EXPRESSIVE_VOICE
     chosen_region = region or os.getenv("AZURE_SPEECH_REGION", "").strip()
     if not chosen_region:
         raise RuntimeError("AZURE_SPEECH_REGION is required")
@@ -316,12 +316,12 @@ def build_timed_edit_job(script_path: Path, narration: dict, assets_manifest_pat
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Synthesize Australian documentary narration and captions with Azure Speech")
+    parser = argparse.ArgumentParser(description="Synthesize expressive English documentary narration and captions with Azure Speech")
     parser.add_argument("script_json", type=Path)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--base-dir", type=Path, required=True, help="Workspace containing secrets.json")
     parser.add_argument("--assets-manifest", type=Path, help="selected_assets.json from preproduction asset acquisition")
-    parser.add_argument("--voice", help="Azure voice override (default: AZURE_TTS_VOICE or expressive Australian Isla)")
+    parser.add_argument("--voice", help="Azure voice override (default: AZURE_TTS_VOICE or expressive English Ethan)")
     parser.add_argument("--region", help="Azure Speech resource region; defaults to AZURE_SPEECH_REGION")
     args = parser.parse_args()
     try:
