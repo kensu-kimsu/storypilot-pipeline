@@ -15,9 +15,11 @@ class AzureTtsTests(unittest.TestCase):
         self.assertEqual(emotion_to_style("suspense"), "softvoice")
 
     def test_ssml_escapes_text_and_adds_emotional_style_only_for_mai_voice(self):
-        expressive = build_ssml("A & B", voice="en-AU-Isla:MAI-Voice-2.1", emotion="fearful", pace="slow")
-        standard = build_ssml("A & B", voice="en-AU-WilliamNeural", emotion="fearful", pace="slow")
+        expressive = build_ssml("A & B", voice="en-US-Ethan:MAI-Voice-2.1", emotion="fearful", pace="slow")
+        standard = build_ssml("A & B", voice="en-US-GuyNeural", emotion="fearful", pace="slow")
         self.assertIn('style="fearful"', expressive)
+        female_expressive = build_ssml("A & B", voice="en-US-Olivia:MAI-Voice-2.1", emotion="hopeful")
+        self.assertIn('style="hopeful"', female_expressive)
         self.assertIn("A &amp; B", expressive)
         self.assertNotIn("express-as", standard)
         self.assertIn('rate="-8%"', standard)
