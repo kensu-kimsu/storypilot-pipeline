@@ -92,7 +92,7 @@ To let the program research recent popular YouTube videos and choose the first n
 python main_pipeline.py preproduction --channels channels.json --base-dir ./production --channel @yourhandle --discover-assets --make-thumbnails --acquire-assets
 ```
 
-That discovery mode needs `YOUTUBE_API_KEY`. YouTube's public counters do not provide competitor retention or watch-time data. The project processes one selected topic per run and uses `history.json` to avoid repeated topics once they have been recorded there.
+That discovery mode needs `YOUTUBE_API_KEY`. YouTube's public counters do not provide competitor retention or watch-time data. The project processes one selected topic per run. It reads `history.json` to avoid repeats, but the current CLI does not automatically write completed topics to that file; the `record_history()` helper must be called by a later publishing/completion step.
 
 ## 4. What each stage does and writes
 
@@ -106,7 +106,7 @@ That discovery mode needs `YOUTUBE_API_KEY`. YouTube's public counters do not pr
 | Asset discovery (`--discover-assets`) | Searches no-key Commons, Internet Archive, Library of Congress, and NASA collections. It adds source candidates and links to the manifest. | `asset_requests.json` updated with `candidates`; discovery alone does not mean rights have been cleared. |
 | Asset acquisition (`--acquire-assets`) | Reuses matches from the catalog first, then tries Pixabay (if configured) and the public archive adapters. It can generate a clearly labeled illustrative still when no photo matches. It indexes local Audio Library seeds and can try Freesound previews. | `selected_assets.json`; reusable files in shared `assets/` folders; SQLite catalog and JSON sidecars. Unavailable assets are listed under `unresolved`. |
 | Metadata/thumbnails | Writes title hypotheses, description, tags, and two thumbnail briefs. With `--make-thumbnails`, asks OpenAI for two thumbnail images. | `metadata_ab_test.json` plus `thumbnail_1.png` and `thumbnail_2.png` when generation succeeds. |
-| Pre-production QA | Checks package files, claim IDs/URLs, script-length estimate, rights metadata for acquired files, and optionally provided final files. | QA issue list in the CLI/logs; fix issues before editing/publishing. |
+| QA helper | `qa_package()` can check package files, claim IDs/URLs, script-length estimate, rights metadata, and optionally supplied final files, but the current CLI does not call it as an automatic gate. | No automatic QA report is produced by the current command. Final video QA is not implemented. |
 | Edit handoff | Takes a timed narration/edit job JSON with local asset paths and burned-caption cues. | FCPXML, timeline JSON, and edit notes in the `--out` folder. This is an editor handoff, not an MP4. |
 | Final render and upload | Not implemented in this repository version. | Render the timeline in a compatible editor, verify duration/audio/captions/aspect ratio, then upload privately yourself. |
 
