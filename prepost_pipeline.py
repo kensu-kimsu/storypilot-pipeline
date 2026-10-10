@@ -68,11 +68,27 @@ def _is_public_http_url(url: str) -> bool:
         return False
 
 
-def research_screenshot_targets(research: dict, *, limit: int = 3) -> list[dict]:
-    """Return unique, public source pages, preferring higher-confidence claims."""
+def research_screenshot_targets(
+    research: dict, *, limit: int = 3, extra_urls: list[str] | None = None
+) -> list[dict]:
+    """Return unique public source pages, prioritizing URLs explicitly supplied by the user."""
     if limit <= 0:
         return []
     targets, seen = [], set()
+    for raw_url in extra_urls or []:
+        url = str(raw_url).strip()
+        if not _is_public_http_url(url) or url in seen:
+            continue
+        seen.add(url)
+        targets.append({
+            "url": url,
+            "title": urlparse(url).netloc,
+            "publisher": urlparse(url).netloc,
+            "claim_id": None,
+            "confidence": "user_provided",
+        })
+        if len(targets) >= limit:
+            return targets
     confidence_rank = {"high": 0, "medium": 1, "low": 2}
     claims = sorted(research.get("claims", []), key=lambda c: confidence_rank.get(str(c.get("confidence", "low")).lower(), 3))
     for claim in claims:
@@ -93,10 +109,11 @@ def research_screenshot_targets(research: dict, *, limit: int = 3) -> list[dict]
 
 
 def capture_research_screenshots(
-    research: dict, topic: str, assets_root: Path, *, job_id: str, limit: int = 3
+    research: dict, topic: str, assets_root: Path, *, job_id: str, limit: int = 3,
+    extra_urls: list[str] | None = None,
 ) -> dict:
     """Capture source pages as research references, never as reuse-cleared footage."""
-    targets = research_screenshot_targets(research, limit=limit)
+    targets = research_screenshot_targets(research, limit=limit, extra_urls=extra_urls)
     output_dir = assets_root / "research_references" / _slug(job_id)
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -411,8 +428,9 @@ def main() -> None:
     parser.add_argument("--channel", help="Channel handle to process")
     parser.add_argument("--topic", help="Skip discovery and prepare this topic")
     parser.add_argument("--make-thumbnails", action="store_true", help="Call the configured OpenAI image model")
-    parser.add_argument("--capture-research-screenshots", action="store_true", help="Capture full-page screenshots of up to three cited source pages into assets/research_references")
-    parser.add_argument("--screenshot-limit", type=int, default=3, help="Maximum cited pages to capture (default: 3)")
+    parser.add_argument("--capture-research-screenshots", action="store_true", help="Capture screenshots of cited source pages into assets/research_references")
+    parser.add_argument("--screenshot-limit", type=int, default=3, help="Maximum combined manual and cited pages to capture (default: 3)")
+    parser.add_argument("--screenshot-url", action="append", default=[], help="Also capture this article URL; repeat for multiple URLs")
     parser.add_argument("--discover-assets", action="store_true", help="Search Pixabay and public archives for candidate URLs")
     parser.add_argument("--acquire-assets", action="store_true", help="Download/reuse Pixabay or public archive visuals, generate missing stills, and match local audio")
     parser.add_argument("--youtube-audio-library-dir", type=Path, help="Folder containing downloaded YouTube Audio Library files; expected subfolders background_music/ and sfx/")
@@ -439,11 +457,11 @@ def main() -> None:
             raise SystemExit("No non-duplicate topic ideas generated")
         topic = ideas[0]["topic"]
     job_dir = prepare_job(channel, topic, args.base_dir, generate_thumbnails=args.make_thumbnails)
-    if args.capture_research_screenshots:
+    if args.capture_research_screenshots or args.screenshot_url:
         research = _json(job_dir / "research.json", {})
         captures = capture_research_screenshots(
             research, topic, args.base_dir / "assets", job_id=job_dir.name,
-            limit=max(0, args.screenshot_limit),
+            limit=max(0, args.screenshot_limit), extra_urls=args.screenshot_url,
         )
         successful = sum(item.get("status") == "captured" for item in captures["screenshots"])
         print(f"Research reference screenshots: {successful}/{len(captures['screenshots'])} captured")
