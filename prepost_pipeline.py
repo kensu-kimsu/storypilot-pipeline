@@ -68,108 +68,166 @@ def _is_public_http_url(url: str) -> bool:
         return False
 
 
-def research_screenshot_targets(
-    research: dict, *, limit: int = 3, extra_urls: list[str] | None = None
-) -> list[dict]:
-    """Return unique public source pages, prioritizing URLs explicitly supplied by the user."""
-    if limit <= 0:
-        return []
-    targets, seen = [], set()
-    for raw_url in extra_urls or []:
-        url = str(raw_url).strip()
-        if not _is_public_http_url(url) or url in seen:
+NEWS_PUBLISHER_DOMAINS = {
+    "abc.net.au", "abcnews.go.com", "apnews.com", "arstechnica.com", "bbc.com",
+    "bbc.co.uk", "bloomberg.com", "cnbc.com", "cnn.com", "ft.com", "theguardian.com",
+    "nytimes.com", "npr.org", "reuters.com", "smh.com.au", "theverge.com", "time.com",
+    "washingtonpost.com", "wsj.com", "wired.com", "techcrunch.com", "news.com.au",
+}
+
+
+def _is_approved_news_url(url: str) -> bool:
+    if not _is_public_http_url(url):
+        return False
+    host = urlparse(url).hostname.lower().rstrip(".")
+    return any(host == domain or host.endswith("." + domain) for domain in NEWS_PUBLISHER_DOMAINS)
+
+
+def _article_screenshot_requests(script: dict) -> list[dict]:
+    """Extract only headline captures explicitly requested by the AI creative brief."""
+    requests_list = []
+    for segment, chunk in enumerate(script.get("narration_chunks", []), 1):
+        request = chunk.get("news_article_screenshot")
+        if not isinstance(request, dict) or not request.get("search_query"):
             continue
-        seen.add(url)
-        targets.append({
-            "url": url,
-            "title": urlparse(url).netloc,
-            "publisher": urlparse(url).netloc,
-            "claim_id": None,
-            "confidence": "user_provided",
-        })
-        if len(targets) >= limit:
-            return targets
-    confidence_rank = {"high": 0, "medium": 1, "low": 2}
-    claims = sorted(research.get("claims", []), key=lambda c: confidence_rank.get(str(c.get("confidence", "low")).lower(), 3))
-    for claim in claims:
-        url = str(claim.get("url", "")).strip()
-        if not _is_public_http_url(url) or url in seen:
+        keywords = [str(word).strip() for word in request.get("highlight_keywords", []) if str(word).strip()]
+        if not keywords:
             continue
-        seen.add(url)
-        targets.append({
-            "url": url,
-            "title": str(claim.get("source_title") or claim.get("publisher") or urlparse(url).netloc),
-            "publisher": str(claim.get("publisher") or urlparse(url).netloc),
-            "claim_id": claim.get("claim_id"),
-            "confidence": claim.get("confidence", "unknown"),
+        requests_list.append({
+            "asset_id": f"news_headline_{len(requests_list)+1:02d}",
+            "category": "news_headline_screenshot",
+            "segment": segment,
+            "search_query": str(request["search_query"]).strip(),
+            "highlight_keywords": keywords,
+            "reason": str(request.get("reason", "")),
+            "status": "awaiting_search",
         })
-        if len(targets) >= max(0, limit):
+        if len(requests_list) >= 2:
             break
-    return targets
+    return requests_list
 
 
-def capture_research_screenshots(
-    research: dict, topic: str, assets_root: Path, *, job_id: str, limit: int = 3,
-    extra_urls: list[str] | None = None,
-) -> dict:
-    """Capture source pages as research references, never as reuse-cleared footage."""
-    targets = research_screenshot_targets(research, limit=limit, extra_urls=extra_urls)
-    output_dir = assets_root / "research_references" / _slug(job_id)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError(
-            "Source screenshots need Playwright. Install it with 'pip install playwright' "
-            "then run 'python -m playwright install chromium'."
-        ) from exc
+def find_news_article(topic: str, request: dict) -> dict | None:
+    """Use OpenAI web search for a headline only when the creative brief asks for one."""
+    prompt = f"""Find one real article from an established news publisher for a documentary visual.
+Topic: {topic}
+Article search query: {request['search_query']}
+The article should visibly show at least one of these terms (or a clear inflection) in its headline: {json.dumps(request['highlight_keywords'])}.
+Search the web. Choose a directly accessible article from one of these publishers only: {', '.join(sorted(NEWS_PUBLISHER_DOMAINS))}.
+Return strict JSON: {{"article":null}} if no verifiable match exists; otherwise {{"article":{{"headline":"exact published headline","url":"direct article URL","publisher":"publisher","published_date":"date or unknown"}}}}.
+Do not invent headlines, URLs, dates, or citations. Do not return a search results page or a homepage."""
+    response = openai_response(prompt, web_search=True)
+    data = parse_json_text(response_text(response))
+    article = data.get("article")
+    if not isinstance(article, dict):
+        return None
+    if not article.get("headline") or not _is_approved_news_url(str(article.get("url", ""))):
+        return None
+    return {
+        "headline": str(article["headline"]).strip(),
+        "url": str(article["url"]).strip(),
+        "publisher": str(article.get("publisher") or urlparse(article["url"]).hostname),
+        "published_date": article.get("published_date", "unknown"),
+    }
 
-    records = []
+
+def _capture_headline(candidate: dict, keywords: list[str], image_path: Path) -> dict:
+    """Capture only the page's visible H1, after highlighting requested keyword matches."""
+    from playwright.sync_api import sync_playwright
+
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
-        page = browser.new_page(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
-        page.set_default_navigation_timeout(45000)
-        for index, target in enumerate(targets, 1):
-            host = _slug(urlparse(target["url"]).netloc)
-            stem = f"{_slug(topic)[:45]}_{host[:28]}_source-{index:02d}"
-            image_path = output_dir / f"{stem}.png"
-            record = {
-                **target,
-                "image_path": str(image_path),
-                "captured_at": datetime.now(timezone.utc).isoformat(),
-                "purpose": "research reference screenshot; rights for reuse in a published video are not implied",
-                "status": "failed",
-            }
-            try:
-                response = page.goto(target["url"], wait_until="domcontentloaded")
-                article = page.locator("article").first
-                main = page.locator("main").first
-                if article.count() and article.is_visible():
-                    article.screenshot(path=str(image_path), animations="disabled", timeout=45000)
-                    record["capture_scope"] = "article element"
-                elif main.count() and main.is_visible():
-                    main.screenshot(path=str(image_path), animations="disabled", timeout=45000)
-                    record["capture_scope"] = "main element"
-                else:
-                    page.screenshot(path=str(image_path), full_page=True, animations="disabled", timeout=45000)
-                    record["capture_scope"] = "full page fallback"
-                record["status"] = "captured"
-                record["http_status"] = response.status if response else None
-                record["page_title"] = page.title()
-            except Exception as exc:  # Some sites block automated browsers or fail to load.
-                record["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
-                if image_path.exists():
-                    image_path.unlink()
-            records.append(record)
-        browser.close()
+        try:
+            page = browser.new_page(viewport={"width": 1440, "height": 900}, device_scale_factor=1)
+            page.set_default_navigation_timeout(45000)
+            response = page.goto(candidate["url"], wait_until="domcontentloaded")
+            if not _is_approved_news_url(page.url):
+                raise ValueError("News page redirected outside the approved publisher list")
+            headline = page.locator("h1").first
+            if not headline.count() or not headline.is_visible():
+                raise ValueError("Article page has no visible headline heading (h1)")
+            actual_headline = " ".join(headline.inner_text().split())
+            if not actual_headline:
+                raise ValueError("Article page headline is empty")
+            result = headline.evaluate(
+                """(el, words) => {
+                  const terms = words.filter(Boolean).sort((a, b) => b.length - a.length);
+                  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+                  const nodes = [];
+                  while (walker.nextNode()) nodes.push(walker.currentNode);
+                  const matched = new Set();
+                  for (const node of nodes) {
+                    const text = node.nodeValue || '';
+                    const lower = text.toLowerCase();
+                    const fragment = document.createDocumentFragment();
+                    let cursor = 0;
+                    while (cursor < text.length) {
+                      let bestStart = -1, bestTerm = '';
+                      for (const term of terms) {
+                        const at = lower.indexOf(term.toLowerCase(), cursor);
+                        if (at >= 0 && (bestStart < 0 || at < bestStart || (at === bestStart && term.length > bestTerm.length))) {
+                          bestStart = at;
+                          bestTerm = term;
+                        }
+                      }
+                      if (bestStart < 0) break;
+                      fragment.append(document.createTextNode(text.slice(cursor, bestStart)));
+                      const matchedText = text.slice(bestStart, bestStart + bestTerm.length);
+                      const mark = document.createElement('mark');
+                      mark.textContent = matchedText;
+                      mark.style.cssText = 'background:#ffe600;color:#111;padding:0 .04em;border-radius:.08em;box-decoration-break:clone;-webkit-box-decoration-break:clone';
+                      fragment.append(mark);
+                      matched.add(matchedText);
+                      cursor = bestStart + bestTerm.length;
+                    }
+                    if (cursor > 0) {
+                      fragment.append(document.createTextNode(text.slice(cursor)));
+                      node.parentNode.replaceChild(fragment, node);
+                    }
+                  }
+                  return [...matched];
+                }""",
+                keywords,
+            )
+            if not result:
+                raise ValueError("None of the requested topic keywords appear in the article headline")
+            headline.screenshot(path=str(image_path), animations="disabled", timeout=45000)
+        finally:
+            browser.close()
+    return {"headline": actual_headline, "highlighted_keywords": result, "http_status": response.status if response else None}
 
+
+def fulfill_news_headline_requests(topic: str, script: dict, assets_root: Path, *, job_id: str) -> dict:
+    """Search and capture no articles unless the script's creative direction requests them."""
+    requests_list = _article_screenshot_requests(script)
+    if not requests_list:
+        return {"screenshots": [], "searched": False}
+
+    output_dir = assets_root / "screenshots" / _slug(job_id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    records = []
+    for request in requests_list:
+        record = {**request, "searched": True, "captured_at": datetime.now(timezone.utc).isoformat()}
+        try:
+            article = find_news_article(topic, request)
+            if not article:
+                record.update(status="not_found", error="No matching article found from the approved news publishers")
+                records.append(record)
+                continue
+            filename = f"{_slug(topic)[:35]}_{_slug(article['publisher'])[:24]}_{_slug(article['headline'])[:50]}.png"
+            image_path = output_dir / filename
+            captured = _capture_headline(article, request["highlight_keywords"], image_path)
+            record.update(article, **captured, image_path=str(image_path), status="captured")
+        except Exception as exc:
+            record.update(status="failed", error=f"{type(exc).__name__}: {str(exc)[:300]}")
+        records.append(record)
     manifest = {
         "topic": topic,
-        "kind": "research_reference_screenshots",
-        "notice": "Screenshots document source pages for research. They are not evidence of permission to reuse page content in a video.",
+        "searched": True,
+        "screenshot_count": sum(row.get("status") == "captured" for row in records),
         "screenshots": records,
     }
-    _write(output_dir / "research_screenshots.json", manifest)
+    _write(output_dir / "article_screenshots.json", manifest)
     return manifest
 
 
@@ -287,8 +345,9 @@ def write_script(topic: str, channel: dict, research: dict) -> dict:
     prompt = f"""Write a retention-focused documentary script based ONLY on the supplied research claims. Do not add unsupported facts. Attach source claim IDs to every factual paragraph. Preserve qualifications and uncertainty. Cite claims inline as [C1].
 Channel: {channel.get('name', channel.get('handle', ''))}; niche: {channel.get('niche')}; voice/tone: {channel.get('tone', 'cinematic, clear, curious')}.
 Topic: {topic}. Target >=20 minutes spoken narration (roughly 2,600-3,000 words, but prioritize coherent pacing). Use a strong opening, escalating questions, clear act progression, payoff, and an ending that leads naturally to another video without an artificial cliffhanger. Include visual/tone/audio-energy tags per segment.
+For each narration chunk, decide whether a real news headline is creatively necessary. Normally set "news_article_screenshot": null. Request one only when an actual news headline materially strengthens the scene (for example, showing contemporaneous media coverage of a major event). Do not request generic headlines or decorative screenshots; request at most two total. When needed, set {{"search_query":"specific article/story query","highlight_keywords":["one or two exact headline terms"],"reason":"why the headline itself helps this scene"}}.
 Research ledger: {json.dumps(research.get('claims', []), ensure_ascii=False)}
-Return strict JSON {{"title_working":"...","logline":"...","narration_chunks":[{{"text":"...","claim_ids":["C1"],"tone":"...","audio_energy":0.5,"visual_note":"...","asset_queries":["..."] ,"music_mood":"...","sfx_cues":["...", "..."]}}],"shorts_script":{{"text":"standalone complete 30-second short, about 60-75 words","hook":"...","payoff":"...","claim_ids":["C1"]}}}}."""
+Return strict JSON {{"title_working":"...","logline":"...","narration_chunks":[{{"text":"...","claim_ids":["C1"],"tone":"...","audio_energy":0.5,"visual_note":"...","asset_queries":["..."] ,"news_article_screenshot":null,"music_mood":"...","sfx_cues":["...", "..."]}}],"shorts_script":{{"text":"standalone complete 30-second short, about 60-75 words","hook":"...","payoff":"...","claim_ids":["C1"]}}}}."""
     script = parse_json_text(response_text(openai_response(prompt)))
     claim_ids = {c.get("claim_id") for c in research.get("claims", [])}
     used = {cid for chunk in script.get("narration_chunks", []) for cid in chunk.get("claim_ids", [])}
@@ -329,6 +388,7 @@ def asset_research(script: dict, out_dir: Path) -> dict:
             requests_list.append({"asset_id": f"asset_{len(requests_list)+1:03d}", "query": cue,
                 "category": "sfx", "segment": i, "purpose": "Sound effect matched to the scene direction",
                 "suggested_sources": ["YouTube Audio Library local catalog"], "download_status": "match_local_catalog"})
+    requests_list.extend(_article_screenshot_requests(script))
     ledger = {"policy": "AI provides per-scene needs; Python resolves, downloads, caches and records reusable files. Discovery is not reuse permission.", "assets": requests_list}
     _write(out_dir / "asset_requests.json", ledger)
     return ledger
@@ -376,7 +436,17 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
     out.mkdir(parents=True, exist_ok=True)
     research = research_story(topic, channel)
     script = write_script(topic, channel, research)
-    assets = asset_research(script, out)
+    asset_manifest = asset_research(script, out)
+    screenshots = fulfill_news_headline_requests(topic, script, base_dir / "assets", job_id=job_id)
+    screenshot_by_id = {row.get("asset_id"): row for row in screenshots.get("screenshots", [])}
+    for asset in asset_manifest["assets"]:
+        if asset.get("category") != "news_headline_screenshot":
+            continue
+        result = screenshot_by_id.get(asset["asset_id"], {})
+        asset.update({key: result[key] for key in ("url", "publisher", "headline", "image_path", "status", "error", "highlighted_keywords") if key in result})
+        if result.get("status") == "captured":
+            asset["local_path"] = result["image_path"]
+    _write(out / "asset_requests.json", asset_manifest)
     metadata = make_metadata(topic, channel, script)
     _write(out / "research.json", research)
     _write(out / "script.json", script)
@@ -428,9 +498,6 @@ def main() -> None:
     parser.add_argument("--channel", help="Channel handle to process")
     parser.add_argument("--topic", help="Skip discovery and prepare this topic")
     parser.add_argument("--make-thumbnails", action="store_true", help="Call the configured OpenAI image model")
-    parser.add_argument("--capture-research-screenshots", action="store_true", help="Capture screenshots of cited source pages into assets/research_references")
-    parser.add_argument("--screenshot-limit", type=int, default=3, help="Maximum combined manual and cited pages to capture (default: 3)")
-    parser.add_argument("--screenshot-url", action="append", default=[], help="Also capture this article URL; repeat for multiple URLs")
     parser.add_argument("--discover-assets", action="store_true", help="Search Pixabay and public archives for candidate URLs")
     parser.add_argument("--acquire-assets", action="store_true", help="Download/reuse Pixabay or public archive visuals, generate missing stills, and match local audio")
     parser.add_argument("--youtube-audio-library-dir", type=Path, help="Folder containing downloaded YouTube Audio Library files; expected subfolders background_music/ and sfx/")
@@ -457,14 +524,6 @@ def main() -> None:
             raise SystemExit("No non-duplicate topic ideas generated")
         topic = ideas[0]["topic"]
     job_dir = prepare_job(channel, topic, args.base_dir, generate_thumbnails=args.make_thumbnails)
-    if args.capture_research_screenshots or args.screenshot_url:
-        research = _json(job_dir / "research.json", {})
-        captures = capture_research_screenshots(
-            research, topic, args.base_dir / "assets", job_id=job_dir.name,
-            limit=max(0, args.screenshot_limit), extra_urls=args.screenshot_url,
-        )
-        successful = sum(item.get("status") == "captured" for item in captures["screenshots"])
-        print(f"Research reference screenshots: {successful}/{len(captures['screenshots'])} captured")
     if args.discover_assets:
         search_asset_sources(job_dir / "asset_requests.json")
     if args.acquire_assets:
