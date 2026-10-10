@@ -209,7 +209,7 @@ class MediaLibrary:
             extmeta = info.get("extmetadata", {})
             title = page.get("title", "Commons file").removeprefix("File:")
             candidates.append({
-                "download_url": info.get("url") or info.get("thumburl"),
+                "download_url": (info.get("thumburl") or info.get("url")) if mime == "image/svg+xml" else (info.get("url") or info.get("thumburl")),
                 "source_url": "https://commons.wikimedia.org/wiki/" + page.get("title", "").replace(" ", "_"),
                 "title": title, "creator": extmeta.get("Artist", {}).get("value"),
                 "license": extmeta.get("LicenseShortName", {}).get("value"),
