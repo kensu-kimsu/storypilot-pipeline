@@ -20,9 +20,6 @@ def main() -> None:
     pre.add_argument("--topic")
     pre.add_argument("--discover-assets", action="store_true")
     pre.add_argument("--make-thumbnails", action="store_true")
-    pre.add_argument("--capture-research-screenshots", action="store_true")
-    pre.add_argument("--screenshot-limit", type=int, default=3)
-    pre.add_argument("--screenshot-url", action="append", default=[])
     pre.add_argument("--acquire-assets", action="store_true")
     pre.add_argument("--youtube-audio-library-dir", type=Path)
     edit = sub.add_parser("edit", help="Build FCPXML/JSON assistant-editor handoff")
@@ -50,12 +47,6 @@ def main() -> None:
             sys.argv.append("--discover-assets")
         if args.make_thumbnails:
             sys.argv.append("--make-thumbnails")
-        if args.capture_research_screenshots:
-            sys.argv.append("--capture-research-screenshots")
-        for url in args.screenshot_url:
-            sys.argv += ["--screenshot-url", url]
-        if args.screenshot_limit != 3:
-            sys.argv += ["--screenshot-limit", str(args.screenshot_limit)]
         if args.acquire_assets:
             sys.argv.append("--acquire-assets")
         if args.youtube_audio_library_dir:
