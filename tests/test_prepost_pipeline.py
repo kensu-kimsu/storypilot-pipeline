@@ -16,9 +16,9 @@ from prepost_pipeline import (
 
 
 class PrePostPipelineTests(unittest.TestCase):
-    def test_niche_profiles_supply_australian_voice_and_retention_guidance(self):
-        config = get_niche_config("Australian business history documentaries")
-        self.assertEqual(config["voice_name"], "en-AU-Isla:MAI-Voice-2.1")
+    def test_niche_profiles_supply_english_expressive_voice_and_retention_guidance(self):
+        config = get_niche_config("business history documentaries")
+        self.assertEqual(config["voice_name"], "en-US-Ethan:MAI-Voice-2.1")
         self.assertIn("pay off", config["retention_guidance"])
         self.assertIn("filings", config["research_prompt"])
 
@@ -39,7 +39,7 @@ class PrePostPipelineTests(unittest.TestCase):
     def test_script_prompt_sets_narrator_delivery_and_retention_contract(self):
         research = {"verified_claims": [{"claim_id": "C1", "claim": "A documented fact", "url": "https://example.org"}]}
         script = {
-            "narration_direction": "Australian English; curious, then grave.",
+            "narration_direction": "English; curious, then grave.",
             "narration_chunks": [{"text": "A documented opening.", "claim_ids": ["C1"], "tone": "curious", "delivery_emotion": "intrigued", "delivery_pace": "measured", "vocal_intensity": 0.4, "pause_after_seconds": 0.6}],
             "shorts_script": {"text": "A complete short story.", "claim_ids": ["C1"]},
         }
@@ -50,8 +50,8 @@ class PrePostPipelineTests(unittest.TestCase):
         with patch("prepost_pipeline.openai_response", side_effect=fake_response):
             result = write_script("Example", {"niche": "business"}, research, get_niche_config("business"))
         self.assertIn("truthful story promise", captured["prompt"])
-        self.assertIn("Australian English", captured["prompt"])
-        self.assertEqual(result["voice_name"], "en-AU-Isla:MAI-Voice-2.1")
+        self.assertIn("English", captured["prompt"])
+        self.assertEqual(result["voice_name"], "en-US-Ethan:MAI-Voice-2.1")
         self.assertFalse(result["narration_audio_generated"])
         self.assertFalse(result["unsupported_claim_ids"])
 
