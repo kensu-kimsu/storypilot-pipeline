@@ -1,4 +1,4 @@
-"""Reusable local media catalog with optional Pixabay, Freesound and OpenAI adapters.
+"""Reusable local media catalog with Pixabay, keyless archives, Freesound and OpenAI.
 
 Media stays in per-type folders and is indexed by a SHA-256 hash. Search results
 are downloaded only from an explicitly supported provider; generated images are
@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 try:
     import requests
@@ -57,7 +57,10 @@ class MediaLibrary:
         self.db = root / "catalog.sqlite3"
         self.pixabay_cache = root / ".pixabay_search_cache"
         self.pixabay_cache.mkdir(parents=True, exist_ok=True)
+        self.public_cache = root / ".public_search_cache"
+        self.public_cache.mkdir(parents=True, exist_ok=True)
         self.pixabay_searches_this_run = 0
+        self.public_searches_this_run = 0
         with sqlite3.connect(self.db) as conn:
             conn.execute("""CREATE TABLE IF NOT EXISTS assets (
                 asset_id TEXT PRIMARY KEY, sha256 TEXT UNIQUE NOT NULL, category TEXT NOT NULL,
@@ -73,9 +76,10 @@ class MediaLibrary:
             raise ValueError(f"Unknown category: {category}")
         digest = hashlib.sha256(data).hexdigest()
         with sqlite3.connect(self.db) as conn:
-            row = conn.execute("SELECT asset_id,path FROM assets WHERE sha256=?", (digest,)).fetchone()
+            row = conn.execute("SELECT asset_id,path,source,source_url,license,creator,category FROM assets WHERE sha256=?", (digest,)).fetchone()
             if row:
-                return {"asset_id": row[0], "path": row[1], "reused": True}
+                return {"asset_id": row[0], "path": row[1], "source": row[2], "source_url": row[3],
+                        "license": row[4], "creator": row[5], "category": row[6], "reused": True}
         title_slug = _slug(title)
         file_name = f"{title_slug}_{digest[:12]}{ext}"
         path = self.root / FOLDERS[category] / file_name
@@ -96,7 +100,9 @@ class MediaLibrary:
                 record["created_at"], json.dumps(details, ensure_ascii=False)))
         sidecar = path.with_suffix(path.suffix + ".json")
         sidecar.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
-        return {"asset_id": asset_id, "path": str(path.resolve()), "reused": False}
+        return {"asset_id": asset_id, "path": str(path.resolve()), "source": source,
+                "source_url": source_url, "license": license_name, "creator": creator,
+                "category": category, "metadata": details, "reused": False}
 
     def find_reusable(self, query: str, category: str | None = None, limit: int = 10) -> list[dict]:
         terms = set(re.findall(r"[a-z0-9]+", query.lower()))
@@ -167,6 +173,209 @@ class MediaLibrary:
                 duration=duration, ext=ext, metadata={"provider_id": hit.get("id"), "query": query,
                     "download_url": download_url, "width": chosen.get("width") if category == "video" else hit.get("imageWidth"),
                     "height": chosen.get("height") if category == "video" else hit.get("imageHeight")}))
+        return saved
+
+    def _cached_public_json(self, provider: str, query: str, category: str,
+                            url: str, params: dict, *, headers: dict | None = None) -> dict:
+        """Fetch and cache a keyless archive search response for 24 hours."""
+        cache_key = hashlib.sha256(f"{provider}\0{category}\0{query.strip().lower()}".encode()).hexdigest()
+        cache_path = self.public_cache / f"{cache_key}.json"
+        if cache_path.exists() and time.time() - cache_path.stat().st_mtime < 24 * 60 * 60:
+            try:
+                return json.loads(cache_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+        max_searches = max(1, int(os.getenv("PUBLIC_ARCHIVE_MAX_SEARCHES_PER_RUN", "20")))
+        if self.public_searches_this_run >= max_searches:
+            return {}
+        response = _require_requests().get(url, params=params, headers=headers, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+        cache_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        self.public_searches_this_run += 1
+        return payload
+
+    @staticmethod
+    def _commons_candidates(payload: dict, category: str, query: str) -> list[dict]:
+        pages = payload.get("query", {}).get("pages", {})
+        pages = pages if isinstance(pages, list) else list(pages.values())
+        candidates = []
+        for page in pages:
+            info = (page.get("imageinfo") or [{}])[0]
+            mime = info.get("mime", "")
+            is_video = mime.startswith("video/") or Path(info.get("url", "")).suffix.lower() in {".webm", ".ogv", ".mp4"}
+            if (category == "video") != is_video:
+                continue
+            extmeta = info.get("extmetadata", {})
+            title = page.get("title", "Commons file").removeprefix("File:")
+            candidates.append({
+                "download_url": info.get("url") or info.get("thumburl"),
+                "source_url": "https://commons.wikimedia.org/wiki/" + page.get("title", "").replace(" ", "_"),
+                "title": title, "creator": extmeta.get("Artist", {}).get("value"),
+                "license": extmeta.get("LicenseShortName", {}).get("value"),
+                "license_url": extmeta.get("LicenseUrl", {}).get("value"),
+                "mime": mime, "query": query,
+            })
+        return candidates
+
+    def _internet_archive_candidates(self, query: str, category: str, limit: int) -> list[dict]:
+        mediatype = "movies" if category == "video" else "image"
+        search = self._cached_public_json("internet_archive", query, category,
+            "https://archive.org/advancedsearch.php", {
+                "q": f"({query}) AND mediatype:{mediatype}",
+                "fl[]": ["identifier", "title", "creator", "date", "mediatype", "licenseurl", "rights"],
+                "rows": limit, "output": "json",
+            })
+        results = []
+        for item in search.get("response", {}).get("docs", [])[:limit]:
+            identifier = item.get("identifier")
+            if not identifier:
+                continue
+            metadata = self._cached_public_json("internet_archive_item", identifier, "metadata",
+                f"https://archive.org/metadata/{identifier}", {})
+            files = metadata.get("files", [])
+            allowed = {"jpg", "jpeg", "png", "gif", "tif", "tiff"} if category == "picture" else {"mp4", "mpeg4", "ogv", "webm", "mov"}
+            for file in files:
+                name = file.get("name", "")
+                suffix = Path(name).suffix.lower().lstrip(".")
+                fmt = str(file.get("format", "")).lower()
+                if suffix not in allowed and not (category == "video" and "mpeg4" in fmt):
+                    continue
+                results.append({
+                    "download_url": f"https://archive.org/download/{identifier}/{quote(name)}",
+                    "source_url": f"https://archive.org/details/{identifier}",
+                    "title": item.get("title") or identifier, "creator": item.get("creator"),
+                    "license": item.get("licenseurl") or item.get("rights") or metadata.get("metadata", {}).get("rights"),
+                    "license_url": item.get("licenseurl"), "query": query,
+                    "format": file.get("format"), "provider_id": identifier,
+                })
+                break
+        return results
+
+    def _loc_candidates(self, query: str, category: str, limit: int) -> list[dict]:
+        if category != "picture":
+            return []
+        payload = self._cached_public_json("library_of_congress", query, category,
+            "https://www.loc.gov/pictures/search/", {"q": query, "fo": "json", "c": limit})
+        results = []
+        for item in payload.get("results", [])[:limit]:
+            image_urls = item.get("image_url") or []
+            if not image_urls:
+                continue
+            results.append({"download_url": image_urls[-1], "source_url": item.get("url", ""),
+                "title": item.get("title") or query, "creator": item.get("contributor", [None])[0] if item.get("contributor") else None,
+                "license": item.get("rights") or item.get("rights_advisory"), "query": query,
+                "provider_id": item.get("id"), "date": item.get("date")})
+        return results
+
+    def _nasa_candidates(self, query: str, category: str, limit: int) -> list[dict]:
+        media_type = "video" if category == "video" else "image"
+        search = self._cached_public_json("nasa_images", query, category,
+            "https://images-api.nasa.gov/search", {"q": query, "media_type": media_type, "page_size": limit})
+        results = []
+        for item in search.get("collection", {}).get("items", [])[:limit]:
+            data = (item.get("data") or [{}])[0]
+            nasa_id = data.get("nasa_id")
+            if not nasa_id:
+                continue
+            asset_payload = self._cached_public_json("nasa_asset", nasa_id, "metadata",
+                f"https://images-api.nasa.gov/asset/{nasa_id}", {})
+            assets = asset_payload.get("collection", {}).get("items", [])
+            accepted = {".mp4"} if category == "video" else {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+            direct = next((entry.get("href") for entry in assets if Path(urlparse(entry.get("href", "")).path).suffix.lower() in accepted), None)
+            if direct:
+                results.append({"download_url": direct, "source_url": f"https://images.nasa.gov/details/{nasa_id}",
+                    "title": data.get("title") or nasa_id, "creator": data.get("center"),
+                    "license": "NASA media; verify item-specific usage notes", "query": query,
+                    "provider_id": nasa_id, "description": data.get("description"), "date": data.get("date_created")})
+        return results
+
+    def _public_archive_candidates(self, query: str, category: str, limit: int = 1) -> list[dict]:
+        """Search no-key public collections for candidate image/video files.
+
+        The adapters are deliberately sequential and bounded. Archive presence
+        does not itself establish reuse rights; rights metadata is retained for QA.
+        """
+        if category not in {"picture", "video"}:
+            return []
+        headers = {"User-Agent": "StoryPilot/0.1 (https://github.com/kensu-kimsu/storypilot-pipeline)"}
+        sources = [
+            ("wikimedia_commons", lambda: self._commons_candidates(self._cached_public_json(
+                "wikimedia_commons", query, category, "https://commons.wikimedia.org/w/api.php", {
+                    "action": "query", "generator": "search", "gsrsearch": query, "gsrnamespace": 6,
+                    "gsrlimit": min(limit, 10), "prop": "imageinfo", "iiprop": "url|extmetadata",
+                    "iiurlwidth": 1600, "format": "json", "formatversion": 2,
+                }, headers=headers), category, query)),
+            ("internet_archive", lambda: self._internet_archive_candidates(query, category, limit)),
+            ("library_of_congress", lambda: self._loc_candidates(query, category, limit)),
+            ("nasa_images", lambda: self._nasa_candidates(query, category, limit)),
+        ]
+        all_candidates = []
+        for provider, search_candidates in sources:
+            try:
+                provider_candidates = search_candidates()
+            except Exception:
+                continue
+            provider_added = 0
+            for candidate in provider_candidates:
+                candidate["source"] = provider
+                all_candidates.append(candidate)
+                provider_added += 1
+                if provider_added >= limit:
+                    break
+        return all_candidates
+
+    def search_public_archives(self, query: str, category: str, limit: int = 3) -> list[dict]:
+        """Return keyless archive search candidates without downloading media."""
+        return self._public_archive_candidates(query, category, limit)
+
+    def download_public_archives(self, query: str, category: str, limit: int = 1) -> list[dict]:
+        """Search keyless public collections and download relevant image/video files."""
+        candidates = self._public_archive_candidates(query, category, limit)
+        req = _require_requests()
+        headers = {"User-Agent": "StoryPilot/0.1 (https://github.com/kensu-kimsu/storypilot-pipeline)"}
+        saved = []
+        for candidate in candidates:
+            if len(saved) >= limit:
+                break
+            provider = candidate.get("source", "public_archive")
+            download_url = candidate.get("download_url")
+            if not download_url:
+                continue
+            try:
+                media = req.get(download_url, headers=headers if provider == "wikimedia_commons" else None,
+                                timeout=60, stream=True)
+                media.raise_for_status()
+                content_type = media.headers.get("Content-Type", "").split(";")[0].lower()
+                if category == "picture" and content_type and not content_type.startswith("image/"):
+                    continue
+                if category == "video" and content_type and not content_type.startswith("video/") and not download_url.lower().endswith((".mp4", ".webm", ".ogv", ".mov")):
+                    continue
+                suffix = Path(urlparse(download_url).path).suffix.lower()
+                if suffix not in {".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".mp4", ".webm", ".ogv", ".mov"}:
+                    suffix = ".jpg" if category == "picture" else ".mp4"
+                max_bytes = max(1, int(float(os.getenv("MAX_PUBLIC_ASSET_MB", "250")) * 1024 * 1024))
+                content_length = int(media.headers.get("Content-Length", "0") or 0)
+                if content_length > max_bytes:
+                    continue
+                chunks, received = [], 0
+                for chunk in media.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    received += len(chunk)
+                    if received > max_bytes:
+                        chunks = []
+                        break
+                    chunks.append(chunk)
+                if not chunks:
+                    continue
+                saved.append(self._register(b"".join(chunks), category=category,
+                    title=candidate.get("title") or query, tags=[query], source=provider,
+                    source_url=candidate.get("source_url", ""), license_name=candidate.get("license"),
+                    creator=candidate.get("creator"), duration=candidate.get("duration"), ext=suffix,
+                    metadata={**candidate, "download_url": download_url}))
+            except Exception:
+                continue
         return saved
 
     def download_freesound_preview(self, query: str, category: str = "sfx", limit: int = 3) -> list[dict]:
@@ -262,6 +471,8 @@ def acquire_script_assets(script: dict, library: MediaLibrary, *, per_query: int
                         "reused": True, "query": query, "section": section_index}
             else:
                 downloaded = library.download_pixabay(query, category=category, limit=per_query)
+                if not downloaded:
+                    downloaded = library.download_public_archives(query, category=category, limit=per_query)
                 item = ({**downloaded[0], "category": category, "reused": downloaded[0].get("reused", False),
                          "query": query, "section": section_index} if downloaded else None)
             if item is None and category == "picture":
@@ -303,6 +514,8 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
             selected = {**matches[0], "reused": True}
         elif category in {"picture", "video"}:
             downloads = library.download_pixabay(query, category=category, limit=per_request)
+            if not downloads:
+                downloads = library.download_public_archives(query, category=category, limit=per_request)
             if downloads:
                 selected = {**downloads[0], "category": category}
             elif category == "picture":
