@@ -14,6 +14,8 @@ OPTIONAL_API_KEYS = {
     "YOUTUBE_API_KEY": "YouTube Data API (topic discovery; optional when a topic is supplied)",
     "PIXABAY_API_KEY": "Pixabay API (picture/video search and downloads)",
     "FREESOUND_API_KEY": "Freesound API (CC0 music/SFX search)",
+    "AZURE_SPEECH_KEY": "Azure Speech resource key (narration synthesis)",
+    "AZURE_SPEECH_REGION": "Azure Speech resource region (for example australiaeast)",
 }
 
 
