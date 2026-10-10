@@ -12,6 +12,7 @@ class WorkspaceSetupTests(unittest.TestCase):
     def test_only_user_provided_api_keys_are_prompted(self):
         self.assertEqual(set(OPTIONAL_API_KEYS), {
             "YOUTUBE_API_KEY", "PIXABAY_API_KEY", "FREESOUND_API_KEY",
+            "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION",
         })
 
     def test_workspace_directories_are_created(self):
@@ -27,7 +28,7 @@ class WorkspaceSetupTests(unittest.TestCase):
     def test_missing_keys_are_prompted_once_then_loaded_from_secret_file(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {}, clear=True):
             base = Path(temp) / "production"
-            answers = iter(["openai-test-key", "", "", "", "", ""])
+            answers = iter(["openai-test-key", "", "", "", "", "", ""])
             status = configure_api_keys(
                 base,
                 required_keys=("OPENAI_API_KEY",),
