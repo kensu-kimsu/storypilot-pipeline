@@ -18,6 +18,7 @@ def main() -> None:
     pre.add_argument("--base-dir", type=Path, required=True)
     pre.add_argument("--channel")
     pre.add_argument("--topic")
+    pre.add_argument("--niche-prompts", type=Path, default=Path(__file__).with_name("niche_prompts.json"))
     pre.add_argument("--discover-assets", action="store_true")
     pre.add_argument("--make-thumbnails", action="store_true")
     pre.add_argument("--acquire-assets", action="store_true")
@@ -43,6 +44,8 @@ def main() -> None:
             sys.argv += ["--channel", args.channel]
         if args.topic:
             sys.argv += ["--topic", args.topic]
+        if args.niche_prompts:
+            sys.argv += ["--niche-prompts", str(args.niche_prompts)]
         if args.discover_assets:
             sys.argv.append("--discover-assets")
         if args.make_thumbnails:
