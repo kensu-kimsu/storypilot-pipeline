@@ -4,7 +4,7 @@ StoryPilot is a Python-assisted production workflow for fact-led YouTube documen
 
 ## Current implementation boundary
 
-This repository automates **pre-production, Azure narration/caption preparation, media acquisition, and the edit handoff**. The `edit` command now checks asset readiness, retries missing manifest assets through configured sources, writes `edit_readiness.json`, and blocks if required files remain missing. It still does not render a finished MP4, upload to YouTube, or start/read YouTube's native thumbnail experiment. The FCPXML is an assistant-editor handoff, not a completed or QA-passed video.
+This repository automates **pre-production, Azure or local Fish Speech narration/caption preparation, media acquisition, and the edit handoff**. The `edit` command checks asset readiness, retries missing manifest assets through configured sources, writes `edit_readiness.json`, and blocks if required files remain missing. It still does not render a finished MP4, upload to YouTube, or start/read YouTube's native thumbnail experiment. The FCPXML is an assistant-editor handoff, not a completed or QA-passed video.
 
 ## Asset sources
 
@@ -118,7 +118,7 @@ That discovery mode needs `YOUTUBE_API_KEY`. YouTube's public counters do not pr
 | Independent fact check | A second OpenAI web-search pass checks each claim against cited and corroborating sources. Only verified or explicitly qualified claims with source URLs are passed to script writing; if none pass, script generation stops. | `research.json` includes `verification_summary`, checked sources, and `verified_claims`. |
 | News headline screenshots (only when requested by the creative brief) | Searches approved major news publishers, captures only the visible article headline, and highlights matching topic terms in yellow. If no scene requests one, it performs no additional news article search. | `assets/screenshots/<job-name>/*.png` and `article_screenshots.json`. |
 | Script | Writes long-form narration chunks with claim IDs, tone/energy and visual directions, plus a complete short-form script. | `script.json`. The word-count estimate is only a duration proxy; measure actual narration time before editing. |
-| Narration preparation | Synthesizes each chunk with Azure SSML and delivery cues, captures word boundaries, and creates timed English captions. | `narration.wav`, `narration_manifest.json`, `word_timestamps.json`, `captions.srt`, and `timed_edit_job.json`. |
+| Narration preparation | Synthesizes each chunk with Azure Speech or a local Fish Speech S2 server, applies delivery direction, and creates English captions. | `narration.wav`, `narration_manifest.json`, `word_timestamps.json`, `captions.srt`, and `timed_edit_job.json`. Azure supplies word boundaries; Fish local currently uses approximate word timing. |
 | Niche creative direction | Loads the matching entry from `niche_prompts.json` for source priorities, story framing, retention beats, and narration delivery. | Five starter profiles: cybersecurity, finance, business, dark history, and future technology. |
 | Asset planning | Converts each scene's visual, music, and SFX needs into provider search requests. Video requests carry the five-second maximum. | `asset_requests.json`, including query, scene, purpose, and candidate-source list. |
 | Asset discovery (`--discover-assets`) | Searches no-key Commons, Internet Archive, Library of Congress, and NASA collections. It adds source candidates and links to the manifest. | `asset_requests.json` updated with `candidates`. |
@@ -157,7 +157,7 @@ python main_pipeline.py edit path/to/timed_edit_job.json --out "D:\YouTubeProduc
 
 The handoff includes a varied shot plan using each segment's tone and energy, subtitle timing, motion/layout notes, and FCPXML. The pre-edit report confirms that requested source files exist. It does not mean every visual treatment is rendered: the FCPXML does not yet burn in the SRT, composite 2.5D layers, animate chart/map graphics, apply all planned transitions, mix selected music/SFX tracks, or export MP4. Those are remaining final-render features.
 
-### Narration with Azure Speech
+### Narration with Azure Speech or local Fish Speech
 
 Run pre-production with asset acquisition, then synthesize the script and create a timed edit job:
 
@@ -167,7 +167,65 @@ python azure_tts.py "D:\\YouTubeProduction\\jobs\\job-name\\script.json" --out-d
 python main_pipeline.py edit "D:\\YouTubeProduction\\jobs\\job-name\\timed_edit_job.json" --out "D:\\YouTubeProduction\\jobs\\job-name\\edit_handoff"
 ```
 
-Audition a short sample before generating a full episode, and listen to the WAV and inspect the SRT before edit. SSML styles are model-specific: the English MAI voices support styles such as `fearful`, `hopeful`, `excited`, `sad`, `softvoice`, and `whispering`; standard neural voices do not expose these emotion styles. A voice model cannot guarantee natural performance or retention; the script, punctuation, delivery tags, and audio mix all affect the result.
+For Azure Speech, use the existing voice defaults and set your Speech key and region in the workspace `secrets.json` or `.env`. For local Fish Speech, run its model server separately; keep it in a dedicated WSL/Linux or Docker environment so its large PyTorch/CUDA dependencies do not conflict with StoryPilot.
+
+#### Local Fish Speech setup on Windows
+
+The current Fish Audio S2 instructions target Linux or WSL and recommend a GPU with at least 24 GB VRAM for inference. Windows users should use WSL2/Ubuntu or Docker with NVIDIA GPU passthrough. A CPU mode exists, but it may be too slow for practical long-form production. Check the Fish Audio requirements before downloading the large model weights: [installation guide](https://speech.fish.audio/install/) and [inference guide](https://speech.fish.audio/inference/).
+
+In WSL Ubuntu, install the separate Fish environment (choose the CUDA extra compatible with your NVIDIA driver; upstream currently documents `cu126`, `cu128`, and `cu129`):
+
+```bash
+sudo apt update
+sudo apt install -y git ffmpeg libsox-dev portaudio19-dev
+git clone https://github.com/fishaudio/fish-speech.git ~/fish-speech
+cd ~/fish-speech
+conda create -n fish-speech python=3.12 -y
+conda activate fish-speech
+# Example only: use cu126/cu128/cu129 as supported by your driver.
+pip install --extra-index-url https://download.pytorch.org/whl/cu128 -e ".[cu128]"
+hf download fishaudio/s2-pro --local-dir checkpoints/s2-pro
+python tools/api_server.py \
+  --llama-checkpoint-path checkpoints/s2-pro \
+  --decoder-checkpoint-path checkpoints/s2-pro/codec.pth \
+  --listen 0.0.0.0:8080
+```
+
+Leave that terminal running. In Windows PowerShell, check that the local server is reachable:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8080/v1/health
+```
+
+The expected response is `status: ok`. If Windows cannot reach WSL through localhost forwarding, use the WSL IP address in `FISH_SPEECH_URL` instead.
+
+For a consistent narrator across the script's separate narration chunks, prepare a short clean WAV reference and a UTF-8 text file containing the exact spoken words. Fish uses that pair as voice conditioning for each chunk. Use your own voice or a voice you have explicit permission to use. Put the files somewhere persistent, for example:
+
+```text
+D:/YouTubeProduction/assets/narrator_reference.wav
+D:/YouTubeProduction/assets/narrator_reference.txt
+```
+
+Edit `D:\YouTubeProduction\.env` (copy `.env.example` there first) and set:
+
+```dotenv
+NARRATION_PROVIDER=fish
+FISH_SPEECH_URL=http://127.0.0.1:8080
+FISH_SPEECH_REFERENCE_AUDIO=D:/YouTubeProduction/assets/narrator_reference.wav
+FISH_SPEECH_REFERENCE_TEXT_FILE=D:/YouTubeProduction/assets/narrator_reference.txt
+```
+
+Alternatively, set `FISH_SPEECH_REFERENCE_ID` to a reference already installed in the Fish server and leave the two reference-file settings blank. Do not set both reference methods at once. No Azure credentials are needed for Fish. The existing synthesis command then works with `--provider fish`:
+
+```powershell
+python azure_tts.py "D:\YouTubeProduction\jobs\job-name\script.json" --out-dir "D:\YouTubeProduction\jobs\job-name" --base-dir "D:\YouTubeProduction" --assets-manifest "D:\YouTubeProduction\jobs\job-name\selected_assets.json" --provider fish
+```
+
+The script's emotion and tone fields are translated to Fish's inline direction tags. Fish's local endpoint does not return word-alignment timestamps, so the pipeline currently estimates Fish caption times from word length and audio duration; inspect `captions.srt` before editing. The narration manifest marks these timings as `approximate`.
+
+**License check before publishing:** Fish Speech's source and weights use the Fish Audio Research License. Fish Audio describes commercial self-hosting as requiring a separate commercial license. A monetized YouTube channel may count as commercial use, so confirm the license with Fish Audio before publishing content made with the local weights. See the [official repository license notice](https://github.com/fishaudio/fish-speech#license-notice) and [Fish Audio developer page](https://fish.audio/developers/).
+
+Audition a short sample before generating a full episode, and listen to the WAV and inspect the SRT. Azure MAI voice styles are model-specific; Fish receives mapped inline directions such as curious, near-whisper, fearful, and determined. Neither system guarantees a human performance or audience retention: listen to the output and adjust the script, pacing, emotion directions, and mix.
 
 ## 7. A/B testing and publishing
 
