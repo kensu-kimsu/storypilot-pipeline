@@ -2,11 +2,59 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from prepost_pipeline import asset_research, fulfill_news_headline_requests, is_duplicate, qa_package
+from prepost_pipeline import (
+    asset_research,
+    fulfill_news_headline_requests,
+    get_niche_config,
+    is_duplicate,
+    qa_package,
+    verify_research_claims,
+    write_script,
+)
 
 
 class PrePostPipelineTests(unittest.TestCase):
+    def test_niche_profiles_supply_australian_voice_and_retention_guidance(self):
+        config = get_niche_config("Australian business history documentaries")
+        self.assertEqual(config["voice_name"], "en-AU-WilliamNeural")
+        self.assertIn("pay off", config["retention_guidance"])
+        self.assertIn("filings", config["research_prompt"])
+
+    def test_verification_excludes_unsupported_claims_from_script_evidence(self):
+        research = {"claims": [
+            {"claim_id": "C1", "claim": "Supported fact", "url": "https://example.org/a"},
+            {"claim_id": "C2", "claim": "Weak claim", "url": "https://example.org/b"},
+        ]}
+        reply = {"output_text": json.dumps({"results": [
+            {"claim_id": "C1", "status": "verified", "verification_note": "Corroborated", "checked_sources": [{"title": "Record", "url": "https://example.org/record", "support": "Confirms it"}]},
+            {"claim_id": "C2", "status": "unverified", "verification_note": "No corroboration", "checked_sources": []},
+        ]})}
+        with patch("prepost_pipeline.openai_response", return_value=reply):
+            checked = verify_research_claims("Example", research)
+        self.assertEqual([claim["claim_id"] for claim in checked["verified_claims"]], ["C1"])
+        self.assertEqual(checked["verification_summary"]["status"], "passed")
+
+    def test_script_prompt_sets_narrator_delivery_and_retention_contract(self):
+        research = {"verified_claims": [{"claim_id": "C1", "claim": "A documented fact", "url": "https://example.org"}]}
+        script = {
+            "narration_direction": "Australian English; curious, then grave.",
+            "narration_chunks": [{"text": "A documented opening.", "claim_ids": ["C1"], "tone": "curious", "delivery_emotion": "intrigued", "delivery_pace": "measured", "vocal_intensity": 0.4, "pause_after_seconds": 0.6}],
+            "shorts_script": {"text": "A complete short story.", "claim_ids": ["C1"]},
+        }
+        captured = {}
+        def fake_response(prompt, **kwargs):
+            captured["prompt"] = prompt
+            return {"output_text": json.dumps(script)}
+        with patch("prepost_pipeline.openai_response", side_effect=fake_response):
+            result = write_script("Example", {"niche": "business"}, research, get_niche_config("business"))
+        self.assertIn("truthful story promise", captured["prompt"])
+        self.assertIn("Australian English", captured["prompt"])
+        self.assertEqual(result["voice_name"], "en-AU-WilliamNeural")
+        self.assertFalse(result["narration_audio_generated"])
+        self.assertFalse(result["unsupported_claim_ids"])
+
     def test_history_duplicate_detection(self):
         history = [{"topic": "How Rockefeller Built Standard Oil"}]
         self.assertTrue(is_duplicate("How Rockefeller Built Standard Oil", history))
