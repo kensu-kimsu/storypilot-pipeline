@@ -34,6 +34,31 @@ GOOGLE_CSE_API_KEY=...
 GOOGLE_CSE_CX=...
 ```
 
+### API keys and first run
+
+Run the setup command once to create the workspace folders and enter API keys:
+
+```bash
+python main_pipeline.py setup-apis --base-dir ./production
+```
+
+API keys are entered with hidden typing and saved to `./production/secrets.json`. The file is excluded from Git. Keep it private and do not share it; it is local JSON, not encrypted. You can also provide keys as environment variables, which take precedence over saved values. The program does not print key values.
+
+Required for pre-production:
+
+- `OPENAI_API_KEY` — research, scriptwriting, metadata, and optional OpenAI image generation.
+- `YOUTUBE_API_KEY` — required only when the program must discover trending videos; skip discovery by passing `--topic`.
+
+Optional providers:
+
+- `PIXABAY_API_KEY` — search/download candidate pictures and video clips.
+- `FREESOUND_API_KEY` — search CC0 audio previews for music and sound effects.
+- `GOOGLE_CSE_API_KEY` and `GOOGLE_CSE_CX` — find image references. Both are needed together.
+
+The first pre-production run asks for missing required keys and offers one prompt round for optional providers. Leave an optional entry blank to skip it. To add skipped providers later, rerun `setup-apis`; it asks for missing optional keys again. The video edit handoff stage does not need API keys.
+
+The workspace setup creates `discovery/`, `jobs/`, `assets/` and its media folders, `rendered_outputs/`, `temp_assets/`, `logs/`, and YouTube Audio Library seed folders automatically.
+
 For the user's preferred YouTube Audio Library, download tracks into a seed folder once, organized as `background_music/` and `sfx/`. The pipeline imports and indexes them, then selects and copies matching tracks into each job's asset plan. It does not automate downloads from YouTube Audio Library because this implementation has no supported bulk-download API adapter for it. Freesound is the automatic audio fallback when no local track matches and `FREESOUND_API_KEY` is set; it requests CC0-only results and downloads their MP3 previews. Freesound's original-quality download endpoint requires OAuth, while previews do not. CC0 lowers attribution/licensing obligations but does not promise that a platform's automated fingerprinting will never issue a false or third-party claim.
 
 Pixabay's documented API searches images and videos; its website offers music and SFX but there is no documented public audio-search API in the API reference. The current pipeline does not scrape Pixabay's audio pages. Its image/video search responses are cached locally for 24 hours, with a default cap of 10 uncached searches per run (`PIXABAY_MAX_SEARCHES_PER_RUN`). Pixabay asks developers to avoid lots of automated queries and systematic bulk downloads; this limit is a conservative guard, not provider approval for any particular use. For Pixabay music downloaded through its website, save the track page and any Content ID certificate alongside the audio. Pixabay says some free tracks are Content ID registered; a certificate can support a dispute, but it does not prevent a claim or guarantee the dispute outcome.
@@ -84,4 +109,3 @@ The pre-production QA helper checks required files, sourced claims, script lengt
 ```bash
 python -m unittest discover -s tests -v
 ```
-

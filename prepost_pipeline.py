@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 
+from workspace_setup import configure_api_keys, ensure_workspace
+
 try:
     import requests
 except ImportError:  # pure local QA helpers remain importable without API extras
@@ -339,6 +341,12 @@ def main() -> None:
     parser.add_argument("--acquire-assets", action="store_true", help="Download/reuse Pixabay visuals, generate missing stills, and match local audio")
     parser.add_argument("--youtube-audio-library-dir", type=Path, help="Folder containing downloaded YouTube Audio Library files; expected subfolders background_music/ and sfx/")
     args = parser.parse_args()
+    workspace = ensure_workspace(args.base_dir)
+    required_keys = ("OPENAI_API_KEY",) if args.topic else ("OPENAI_API_KEY", "YOUTUBE_API_KEY")
+    api_status = configure_api_keys(args.base_dir, required_keys=required_keys)
+    if api_status["missing_optional"]:
+        print("Optional providers not configured (their features will be skipped): " + ", ".join(api_status["missing_optional"]))
+    print(f"Production folders ready: {workspace['root']}")
     channels = _json(args.channels, [])
     channel = next((c for c in channels if not args.channel or c.get("handle") == args.channel), None)
     if channel is None:

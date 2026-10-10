@@ -25,7 +25,17 @@ def main() -> None:
     edit = sub.add_parser("edit", help="Build FCPXML/JSON assistant-editor handoff")
     edit.add_argument("job_json", type=Path, help="Timed narration segments and approved local asset manifest")
     edit.add_argument("--out", type=Path, required=True, help="Directory for the timeline handoff")
+    setup = sub.add_parser("setup-apis", help="Create the workspace and configure API keys")
+    setup.add_argument("--base-dir", type=Path, required=True, help="Production workspace and local secrets-file directory")
     args = parser.parse_args()
+    if args.stage == "setup-apis":
+        from workspace_setup import configure_api_keys
+        status = configure_api_keys(args.base_dir, required_keys=("OPENAI_API_KEY",), force_optional=True)
+        print(f"Workspace ready: {args.base_dir.expanduser().resolve()}")
+        print(f"Secrets file: {status['secrets_file']}")
+        print("Configured API keys: " + (", ".join(status["configured"]) or "none"))
+        print("Key values are never displayed.")
+        return
     if args.stage == "preproduction":
         from prepost_pipeline import main as preproduction_main
         sys.argv = [sys.argv[0], "--channels", str(args.channels), "--base-dir", str(args.base_dir)]
