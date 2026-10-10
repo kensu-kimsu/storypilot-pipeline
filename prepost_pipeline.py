@@ -125,7 +125,17 @@ def capture_research_screenshots(
             }
             try:
                 response = page.goto(target["url"], wait_until="domcontentloaded")
-                page.screenshot(path=str(image_path), full_page=True, animations="disabled", timeout=45000)
+                article = page.locator("article").first
+                main = page.locator("main").first
+                if article.count() and article.is_visible():
+                    article.screenshot(path=str(image_path), animations="disabled", timeout=45000)
+                    record["capture_scope"] = "article element"
+                elif main.count() and main.is_visible():
+                    main.screenshot(path=str(image_path), animations="disabled", timeout=45000)
+                    record["capture_scope"] = "main element"
+                else:
+                    page.screenshot(path=str(image_path), full_page=True, animations="disabled", timeout=45000)
+                    record["capture_scope"] = "full page fallback"
                 record["status"] = "captured"
                 record["http_status"] = response.status if response else None
                 record["page_title"] = page.title()
