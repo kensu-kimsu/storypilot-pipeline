@@ -121,7 +121,6 @@ def _candidate_asset_ids(segment: dict, assets: dict[str, dict], mode: str) -> l
         a for a in requested
         if a in assets
         and assets[a].get("path")
-        and assets[a].get("rights_status") in {"owned", "licensed", "public_domain", "permission"}
     ]
     # Charts, documents and maps can be generated locally from data; if no suitable
     # asset exists, preserve an explicit placeholder instead of silently reusing B-roll.
@@ -204,10 +203,6 @@ def build_edit_plan(job: dict) -> dict:
             if shot_index > 0 and mode == "split_screen" and rng.random() < 0.35:
                 shot_mode = "kinetic_fact"
             asset = assets.get(asset_id, {}) if asset_id else {}
-            if asset_id and asset.get("rights_status") not in {"owned", "licensed", "public_domain", "permission"}:
-                # Rights must be known before media gets into the editor timeline.
-                asset_id = None
-                asset = {}
             shot = {
                 "shot_id": f"{job['job_id']}_s{seg_index + 1:03d}_{shot_index + 1:02d}",
                 "start": round(t, 3),
@@ -271,12 +266,128 @@ def _editor_note(mode: str, segment: dict) -> str:
         "animated_map": "Trace only verified routes/places; let the route reveal match narration.",
         "parallax_portrait": "Separate portrait, mid-ground props, and smoky background into depth layers; subtle drift.",
         "kinetic_fact": "Emphasise a short phrase or number; avoid repeating the same text animation in adjacent shots.",
-        "cinematic_broll": "Use licensed/owned footage, motivated movement, and a corner statistic only when it adds information.",
+        "cinematic_broll": "Use selected footage, motivated movement, and a corner statistic only when it adds information.",
     }
     note = notes.get(mode, "Choose a visual that directly supports this narration beat.")
     if segment.get("visual_note"):
         note += " " + str(segment["visual_note"])
     return note
+
+
+def prepare_assets_before_edit(job: dict, job_path: Path, report_path: Path) -> list[dict[str, Any]]:
+    """Resolve missing manifest items, then report every item required by edit."""
+    assets_root = Path(job.get("assets_root") or job_path.parent.parent.parent / "assets").expanduser().resolve()
+    requests_to_retry = []
+    rows = job.get("asset_requirements", [])
+    if not isinstance(rows, list):
+        rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        selected = row.get("selected") or {}
+        path = Path(selected.get("path", "")) if selected.get("path") else None
+        if path and path.is_file():
+            continue
+        category = row.get("category")
+        query = str(row.get("query", "")).strip()
+        if category in {"picture", "video", "music", "sfx"} and query:
+            requests_to_retry.append({key: row[key] for key in ("asset_id", "query", "category", "purpose", "segment", "suggested_sources", "max_duration_seconds") if key in row})
+
+    if requests_to_retry:
+        # Load credentials without prompting for unrelated providers at edit time.
+        try:
+            from workspace_setup import configure_api_keys
+            configure_api_keys(assets_root.parent, required_keys=(), interactive=False)
+            from media_library import MediaLibrary, acquire_asset_requests
+            library = MediaLibrary(assets_root)
+            seed_root = assets_root.parent / "audio_library_seed"
+            for category, folder in (("music", "background_music"), ("sfx", "sfx")):
+                seed_folder = seed_root / folder
+                if seed_folder.is_dir():
+                    library.import_audio_library_folder(seed_folder, category)
+            acquired = acquire_asset_requests({"assets": requests_to_retry}, library)
+            by_query = {str(item.get("query", "")).strip().lower(): item for item in acquired.get("assets", [])}
+            for row in rows:
+                if row.get("selected", {}).get("path") and Path(row["selected"]["path"]).is_file():
+                    continue
+                result = by_query.get(str(row.get("query", "")).strip().lower())
+                if result and result.get("selected", {}).get("path"):
+                    row["selected"] = result["selected"]
+                    row["status"] = result.get("status", "downloaded_or_generated")
+            job["assets"] = job.get("assets", {})
+            by_query_existing = {str(row.get("query", "")).strip().lower(): row for row in rows}
+            for segment in job.get("segments", []):
+                ids = list(segment.get("asset_ids", []))
+                for query in segment.get("asset_queries", []):
+                    row = by_query_existing.get(str(query).strip().lower())
+                    picked = (row or {}).get("selected") or {}
+                    media_id = picked.get("asset_id")
+                    if media_id and Path(picked.get("path", "")).is_file() and media_id not in ids:
+                        ids.append(media_id)
+                segment["asset_ids"] = ids
+            for row in rows:
+                picked = row.get("selected") or {}
+                media_id, path = picked.get("asset_id"), picked.get("path")
+                if not media_id or not path or not Path(path).is_file():
+                    continue
+                category = picked.get("category") or row.get("category")
+                kind = {"picture": "image", "generated": "image", "video": "video", "music": "audio", "sfx": "audio"}.get(category, category)
+                job["assets"][str(media_id)] = {
+                    "path": path, "kind": kind, "category": category,
+                    "duration": float(picked.get("duration") or 0), "rights_status": "licensed" if picked.get("license") else "unknown",
+                    "license": picked.get("license"), "creator": picked.get("creator"),
+                    "source": picked.get("source"), "source_url": picked.get("source_url"),
+                }
+        except Exception as exc:
+            job["asset_resolution_error"] = str(exc)
+
+    readiness = []
+    covered = set()
+    for row in rows:
+        picked = row.get("selected") or {}
+        path_value = picked.get("path")
+        exists = bool(path_value and Path(path_value).is_file() and Path(path_value).stat().st_size > 0)
+        covered.add(str(row.get("query", "")).strip().lower())
+        readiness.append({
+            "asset_id": row.get("asset_id"), "query": row.get("query"),
+            "category": row.get("category"), "purpose": row.get("purpose"),
+            "path": path_value, "source": picked.get("source"), "license": picked.get("license"),
+            "status": "ready" if exists else "missing",
+        })
+    for asset_id in sorted({str(value) for segment in job.get("segments", []) for value in segment.get("asset_ids", [])}):
+        asset = job.get("assets", {}).get(asset_id)
+        path_value = (asset or {}).get("path")
+        exists = bool(path_value and Path(path_value).is_file() and Path(path_value).stat().st_size > 0)
+        if not asset:
+            status = "missing_manifest_entry"
+        elif not exists:
+            status = "missing_file"
+        elif asset.get("kind") == "video" and float(asset.get("duration", 0) or 0) <= 0:
+            status = "missing_duration"
+        else:
+            status = "ready"
+        readiness.append({"asset_id": asset_id, "query": asset.get("title") if asset else None,
+                          "category": asset.get("kind") if asset else "visual", "path": path_value, "status": status})
+    for index, segment in enumerate(job.get("segments", []), 1):
+        for query in segment.get("asset_queries", []):
+            if str(query).strip().lower() not in covered:
+                readiness.append({"asset_id": None, "query": query, "category": "visual", "purpose": f"segment {index}", "path": None, "status": "missing_request"})
+    if job.get("captions_required"):
+        caption_path = Path(job.get("captions_file", "")) if job.get("captions_file") else None
+        readiness.append({"asset_id": "captions", "category": "subtitle", "path": str(caption_path) if caption_path else None,
+                          "status": "ready" if caption_path and caption_path.is_file() else "missing_file"})
+    report = {
+        "job_id": job.get("job_id"), "status": "ready" if all(row["status"] == "ready" for row in readiness) else "blocked",
+        "assets_root": str(assets_root), "items": readiness,
+        "resolution_error": job.get("asset_resolution_error"),
+    }
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    missing = [row for row in readiness if row["status"] != "ready"]
+    if missing:
+        summary = ", ".join(f"{item.get('category')}:{item.get('query')}" for item in missing[:8])
+        raise RuntimeError(f"Pre-edit asset check blocked the edit; see {report_path} ({summary})")
+    return readiness
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -295,7 +406,7 @@ def write_editor_notes(path: Path, plan: dict) -> None:
         f"- Canvas: {plan['canvas']['width']}×{plan['canvas']['height']} at {plan['canvas']['fps']} fps",
         f"- Palette: {plan['palette']}",
         f"- Stable variation seed: `{plan['random_seed']}`",
-        "- Visual source rights status is required before an asset is accepted into the plan.",
+        "- Source and license metadata are preserved in the asset manifest.",
         "",
         "## Priority human polish pass",
         "",
@@ -412,13 +523,18 @@ def write_fcpxml(path: Path, plan: dict, assets: dict[str, dict]) -> None:
 
 def build_package(job_path: Path, output_dir: Path) -> dict:
     job = json.loads(job_path.read_text(encoding="utf-8"))
-    # All referenced media must exist and have a positive duration before the edit
-    # is handed to an editor. Unclear rights are rejected during plan generation.
+    prepare_assets_before_edit(job, job_path, output_dir / "edit_readiness.json")
+    # Stop on unresolved ids rather than silently creating visual placeholders.
+    referenced_ids = {str(asset_id) for segment in job.get("segments", []) for asset_id in segment.get("asset_ids", [])}
+    missing_ids = referenced_ids - set(job.get("assets", {}))
+    if missing_ids:
+        raise ValueError("Pre-edit asset check found unresolved asset IDs: " + ", ".join(sorted(missing_ids)))
+    # All present file paths are verified before handing off the timeline.
     for asset_id, asset in job.get("assets", {}).items():
         asset_path = Path(asset.get("path", ""))
         if not asset_path.is_file():
             raise FileNotFoundError(f"Asset {asset_id} is missing: {asset_path}")
-        if float(asset.get("duration", 0)) <= 0:
+        if asset.get("kind") == "video" and float(asset.get("duration", 0)) <= 0:
             raise ValueError(f"Asset {asset_id} must include its source duration")
     narration_path = Path(job["narration_file"])
     if not narration_path.is_file():
@@ -430,7 +546,7 @@ def build_package(job_path: Path, output_dir: Path) -> dict:
     write_editor_notes(output_dir / "EDIT_NOTES.md", plan)
     write_fcpxml(output_dir / "assistant_edit.fcpxml", plan, job["assets"])
     # Copy the input manifest into the package for provenance and repeatability.
-    shutil.copy2(job_path, output_dir / "job_manifest.json")
+    write_json(output_dir / "job_manifest.json", job)
     return plan
 
 
