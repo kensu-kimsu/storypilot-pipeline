@@ -523,13 +523,15 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
                 downloads = library.download_public_archives(query, category=category, limit=per_request)
             if downloads:
                 selected = {**downloads[0], "category": category}
-            elif category == "picture":
+            elif category in {"picture", "video"}:
                 generated = library.generate_image(
                     f"Editorial documentary illustration for {query}. {request.get('purpose','')} "
+                    "Create a still image for a slow cinematic push-in; this is an illustration, not footage. "
                     "Use an atmospheric visual metaphor. Do not invent historical photographs, records, evidence, logos or readable document text.",
                     title=query, tags=[query, "generated illustration"])
                 if generated:
-                    selected = {**generated, "category": "generated"}
+                    selected = {**generated, "category": "generated", "fallback_for": category,
+                                "motion_note": "Apply a restrained slow push or parallax drift in the editor"}
         elif category in {"music", "sfx"} and os.getenv("FREESOUND_API_KEY"):
             audio = library.download_freesound_preview(query, category=category, limit=per_request)
             if audio:
