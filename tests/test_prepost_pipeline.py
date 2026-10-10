@@ -44,6 +44,9 @@ class PrePostPipelineTests(unittest.TestCase):
         targets = research_screenshot_targets(research, limit=5)
         self.assertEqual([row["claim_id"] for row in targets], ["C2", "C5"])
         self.assertEqual(research_screenshot_targets(research, limit=0), [])
+        manual = research_screenshot_targets(research, limit=2, extra_urls=["https://news.example.com/story"])
+        self.assertEqual(manual[0]["confidence"], "user_provided")
+        self.assertEqual(manual[0]["url"], "https://news.example.com/story")
 
 
 if __name__ == "__main__":
