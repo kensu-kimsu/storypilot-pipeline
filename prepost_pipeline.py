@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import ipaddress
 import json
 import os
 import re
@@ -16,6 +17,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from workspace_setup import configure_api_keys, ensure_workspace
 
 try:
@@ -46,6 +48,102 @@ def _write(path: Path, value: Any) -> None:
 
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:80] or "topic"
+
+
+def _is_public_http_url(url: str) -> bool:
+    """Reject non-web and obvious local-network targets before opening a URL."""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            return False
+        host = parsed.hostname.rstrip(".").lower()
+        if host in {"localhost", "localhost.localdomain"} or host.endswith(".localhost") or host.endswith(".local"):
+            return False
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return True
+        return address.is_global
+    except (TypeError, ValueError):
+        return False
+
+
+def research_screenshot_targets(research: dict, *, limit: int = 3) -> list[dict]:
+    """Return unique, public source pages, preferring higher-confidence claims."""
+    if limit <= 0:
+        return []
+    targets, seen = [], set()
+    confidence_rank = {"high": 0, "medium": 1, "low": 2}
+    claims = sorted(research.get("claims", []), key=lambda c: confidence_rank.get(str(c.get("confidence", "low")).lower(), 3))
+    for claim in claims:
+        url = str(claim.get("url", "")).strip()
+        if not _is_public_http_url(url) or url in seen:
+            continue
+        seen.add(url)
+        targets.append({
+            "url": url,
+            "title": str(claim.get("source_title") or claim.get("publisher") or urlparse(url).netloc),
+            "publisher": str(claim.get("publisher") or urlparse(url).netloc),
+            "claim_id": claim.get("claim_id"),
+            "confidence": claim.get("confidence", "unknown"),
+        })
+        if len(targets) >= max(0, limit):
+            break
+    return targets
+
+
+def capture_research_screenshots(
+    research: dict, topic: str, assets_root: Path, *, job_id: str, limit: int = 3
+) -> dict:
+    """Capture source pages as research references, never as reuse-cleared footage."""
+    targets = research_screenshot_targets(research, limit=limit)
+    output_dir = assets_root / "research_references" / _slug(job_id)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise RuntimeError(
+            "Source screenshots need Playwright. Install it with 'pip install playwright' "
+            "then run 'python -m playwright install chromium'."
+        ) from exc
+
+    records = []
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
+        page.set_default_navigation_timeout(45000)
+        for index, target in enumerate(targets, 1):
+            host = _slug(urlparse(target["url"]).netloc)
+            stem = f"{_slug(topic)[:45]}_{host[:28]}_source-{index:02d}"
+            image_path = output_dir / f"{stem}.png"
+            record = {
+                **target,
+                "image_path": str(image_path),
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+                "purpose": "research reference screenshot; rights for reuse in a published video are not implied",
+                "status": "failed",
+            }
+            try:
+                response = page.goto(target["url"], wait_until="domcontentloaded")
+                page.screenshot(path=str(image_path), full_page=True, animations="disabled", timeout=45000)
+                record["status"] = "captured"
+                record["http_status"] = response.status if response else None
+                record["page_title"] = page.title()
+            except Exception as exc:  # Some sites block automated browsers or fail to load.
+                record["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+                if image_path.exists():
+                    image_path.unlink()
+            records.append(record)
+        browser.close()
+
+    manifest = {
+        "topic": topic,
+        "kind": "research_reference_screenshots",
+        "notice": "Screenshots document source pages for research. They are not evidence of permission to reuse page content in a video.",
+        "screenshots": records,
+    }
+    _write(output_dir / "research_screenshots.json", manifest)
+    return manifest
 
 
 def openai_response(prompt: str, *, web_search: bool = False, model: str | None = None) -> dict:
@@ -303,6 +401,8 @@ def main() -> None:
     parser.add_argument("--channel", help="Channel handle to process")
     parser.add_argument("--topic", help="Skip discovery and prepare this topic")
     parser.add_argument("--make-thumbnails", action="store_true", help="Call the configured OpenAI image model")
+    parser.add_argument("--capture-research-screenshots", action="store_true", help="Capture full-page screenshots of up to three cited source pages into assets/research_references")
+    parser.add_argument("--screenshot-limit", type=int, default=3, help="Maximum cited pages to capture (default: 3)")
     parser.add_argument("--discover-assets", action="store_true", help="Search Pixabay and public archives for candidate URLs")
     parser.add_argument("--acquire-assets", action="store_true", help="Download/reuse Pixabay or public archive visuals, generate missing stills, and match local audio")
     parser.add_argument("--youtube-audio-library-dir", type=Path, help="Folder containing downloaded YouTube Audio Library files; expected subfolders background_music/ and sfx/")
@@ -329,6 +429,14 @@ def main() -> None:
             raise SystemExit("No non-duplicate topic ideas generated")
         topic = ideas[0]["topic"]
     job_dir = prepare_job(channel, topic, args.base_dir, generate_thumbnails=args.make_thumbnails)
+    if args.capture_research_screenshots:
+        research = _json(job_dir / "research.json", {})
+        captures = capture_research_screenshots(
+            research, topic, args.base_dir / "assets", job_id=job_dir.name,
+            limit=max(0, args.screenshot_limit),
+        )
+        successful = sum(item.get("status") == "captured" for item in captures["screenshots"])
+        print(f"Research reference screenshots: {successful}/{len(captures['screenshots'])} captured")
     if args.discover_assets:
         search_asset_sources(job_dir / "asset_requests.json")
     if args.acquire_assets:
