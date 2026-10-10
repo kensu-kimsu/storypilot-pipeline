@@ -50,6 +50,25 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:80] or "topic"
 
 
+def get_niche_config(niche: str, prompts_file: Path | None = None) -> dict:
+    """Load the best matching niche guidance, with a safe generic fallback."""
+    path = prompts_file or Path(__file__).with_name("niche_prompts.json")
+    configs = _json(path, {})
+    query = re.sub(r"[^a-z0-9]+", " ", niche.lower()).strip()
+    for name, config in configs.items():
+        key = re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+        if query == key or key in query or query in key:
+            return config
+    return {
+        "voice_name": "en-AU-WilliamNeural",
+        "narration_direction": "Natural, clear Australian English. Match the scene's emotional tone without forced slang or exaggerated delivery.",
+        "default_search_fallback": "documentary topic",
+        "research_prompt": "Prioritise primary documents, reputable reporting, and independent corroboration. Flag uncertainty and conflicting accounts.",
+        "system_prompt": "Tell a clear, evidence-led story with a strong beginning, a logical build, and a satisfying factual conclusion.",
+        "retention_guidance": "Use meaningful discoveries and payoffs to maintain curiosity throughout; do not invent suspense.",
+    }
+
+
 def _is_public_http_url(url: str) -> bool:
     """Reject non-web and obvious local-network targets before opening a URL."""
     try:
@@ -328,33 +347,96 @@ Do not state unverified facts. Ideas should be researchable using primary/credib
     return [idea for idea in ideas if idea.get("topic") and not is_duplicate(idea["topic"], history)][:count]
 
 
-def research_story(topic: str, channel: dict) -> dict:
+def research_story(topic: str, channel: dict, niche_config: dict | None = None) -> dict:
+    niche_config = niche_config or get_niche_config(channel.get("niche", ""))
     prompt = f"""Research a factual documentary story for a {channel.get('niche')} YouTube channel.
 Topic: {topic}
-Use web search. Prefer primary documents, official records, peer-reviewed research, and reputable reporting. Resolve disputed claims, dates, names, units, and causal claims. Do not fill gaps by guessing.
-Return strict JSON: {{"research_brief":"...","claims":[{{"claim_id":"C1","claim":"one checkable factual claim","source_title":"...","url":"https://...","publisher":"...","published_or_accessed":"...","support":"short paraphrase of what the source establishes","confidence":"high|medium|low"}}],"open_questions":["..."]}}.
-Every factual claim in the brief must have a source URL. Include enough claims for a 20-minute documentary, and flag conflicting evidence."""
+Use web search. Build a source-backed evidence ledger for a 20-minute documentary. Aim for at least eight credible, distinct sources when the topic supports it, including primary records where available. Each factual claim must have a direct source URL and a short note about what that source establishes. Separate facts, estimates, allegations, interpretations, and unresolved questions. Never fill gaps by guessing.
+Niche research guidance: {niche_config.get('research_prompt', '')}
+Return strict JSON: {{"research_brief":"...","claims":[{{"claim_id":"C1","claim":"one checkable factual claim","source_title":"...","url":"https://...","publisher":"...","published_or_accessed":"...","source_type":"primary|official|academic|reporting|archive|other","support":"short paraphrase of the relevant evidence","confidence":"high|medium|low","caveat":"qualification or empty string"}}],"open_questions":["..."]}}.
+The brief may contain only claims represented in the ledger. Prioritise original records over summaries and flag conflicting evidence explicitly."""
     response = openai_response(prompt, web_search=True)
     data = parse_json_text(response_text(response))
     data["search_response_id"] = response.get("id")
-    data["verified_claims"] = [c for c in data.get("claims", []) if c.get("url", "").startswith("http") and c.get("confidence") == "high"]
+    data["verified_claims"] = []
     return data
 
 
-def write_script(topic: str, channel: dict, research: dict) -> dict:
-    prompt = f"""Write a retention-focused documentary script based ONLY on the supplied research claims. Do not add unsupported facts. Attach source claim IDs to every factual paragraph. Preserve qualifications and uncertainty. Cite claims inline as [C1].
+def verify_research_claims(topic: str, research: dict, niche_config: dict | None = None) -> dict:
+    """Independently check the proposed claim ledger before any script is written."""
+    niche_config = niche_config or {}
+    claims = research.get("claims", [])
+    if not claims:
+        research["verified_claims"] = []
+        research["verification_summary"] = {"status": "failed", "reason": "No research claims were returned"}
+        return research
+    prompt = f"""Fact-check these proposed documentary claims before script writing.
+Topic: {topic}
+Niche guidance: {niche_config.get('research_prompt', '')}
+Use web search to inspect the cited source and seek independent corroboration. Check dates, names, amounts, definitions, attribution, causation, and qualifications. A claim is verified only when the cited material supports it. Mark qualified if accurate only with an explicit caveat. Mark unverified when evidence is missing or weak; disputed when reliable sources conflict. Do not infer certainty from a source's reputation alone.
+Claims: {json.dumps(claims, ensure_ascii=False)}
+Return strict JSON: {{"results":[{{"claim_id":"C1","status":"verified|qualified|unverified|disputed","verification_note":"what the sources support or fail to support","checked_sources":[{{"title":"...","url":"...","support":"short evidence summary"}}]}}]}}.
+Provide at least one checked source for each verified or qualified claim. Do not invent source URLs."""
+    response = openai_response(prompt, web_search=True)
+    checked = parse_json_text(response_text(response)).get("results", [])
+    by_id = {str(item.get("claim_id")): item for item in checked if item.get("claim_id")}
+    verified = []
+    counts = {"verified": 0, "qualified": 0, "unverified": 0, "disputed": 0}
+    for claim in claims:
+        result = by_id.get(str(claim.get("claim_id")), {})
+        status = str(result.get("status", "unverified")).lower()
+        sources = result.get("checked_sources", [])
+        valid_sources = [
+            source for source in sources
+            if isinstance(source, dict) and str(source.get("url", "")).startswith(("http://", "https://"))
+        ] if isinstance(sources, list) else []
+        if status in {"verified", "qualified"} and not valid_sources:
+            status = "unverified"
+        if status not in counts:
+            status = "unverified"
+        claim["verification_status"] = status
+        claim["verification_note"] = str(result.get("verification_note", "No verification result returned"))
+        claim["checked_sources"] = valid_sources
+        counts[status] += 1
+        if status in {"verified", "qualified"} and str(claim.get("url", "")).startswith(("http://", "https://")):
+            verified.append(claim)
+    research["verified_claims"] = verified
+    research["verification_response_id"] = response.get("id")
+    research["verification_summary"] = {
+        "status": "passed" if verified else "failed",
+        "claim_counts": counts,
+        "verified_claim_ids": [claim.get("claim_id") for claim in verified],
+    }
+    return research
+
+
+def write_script(topic: str, channel: dict, research: dict, niche_config: dict | None = None) -> dict:
+    niche_config = niche_config or get_niche_config(channel.get("niche", ""))
+    claims = research.get("verified_claims", [])
+    if not claims:
+        raise RuntimeError("Script writing stopped: no research claims passed the verification step")
+    voice_name = channel.get("voice_name") or niche_config.get("voice_name", "en-AU-WilliamNeural")
+    narration_direction = niche_config.get("narration_direction", "Natural, clear Australian English.")
+    prompt = f"""Write a retention-focused documentary script based ONLY on the supplied VERIFIED research claims. Do not add unsupported facts. Attach source claim IDs to every factual paragraph. Preserve qualifications and uncertainty. Cite claims inline as [C1].
 Channel: {channel.get('name', channel.get('handle', ''))}; niche: {channel.get('niche')}; voice/tone: {channel.get('tone', 'cinematic, clear, curious')}.
-Topic: {topic}. Target >=20 minutes spoken narration (roughly 2,600-3,000 words, but prioritize coherent pacing). Use a strong opening, escalating questions, clear act progression, payoff, and an ending that leads naturally to another video without an artificial cliffhanger. Include visual/tone/audio-energy tags per segment.
+Topic: {topic}. Target at least 20 minutes spoken narration (roughly 2,700-3,000 words at a measured documentary pace). {niche_config.get('system_prompt', '')}
+Retention design: {niche_config.get('retention_guidance', '')}
+Maintain attention from the first line through the ending: open on a specific verified moment or question; state a truthful story promise early; build in clear acts where each section adds evidence, changes the stakes, or corrects an earlier assumption; pay off every major question. Add meaningful re-hooks about every 2-3 minutes, but never use fake cliffhangers, repeat the same teaser, or withhold basic facts merely to inflate watch time. Remove repeated exposition and filler. The ending must resolve the central story, then offer a natural reason to watch another episode without an artificial cliffhanger.
+Write for a natural human narrator using Australian English. Keep sentences speakable and varied, use contractions where natural, and avoid stiff transitions, repeated rhetorical questions, forced slang, and overly polished essay language. Never put performance directions inside the words to be spoken. The narrator should follow the emotion and tone assigned to each scene; let intensity rise and fall with the evidence rather than reading every line dramatically.
+For each narration chunk, give a `tone` that the creative director can use, plus `delivery_emotion`, `delivery_pace`, `vocal_intensity` from 0.0 to 1.0, and `pause_after_seconds`. These fields guide a future TTS/narrator pass; do not write the audio itself. Overall narration direction: {narration_direction}
 For each narration chunk, decide whether a real news headline is creatively necessary. Normally set "news_article_screenshot": null. Request one only when an actual news headline materially strengthens the scene (for example, showing contemporaneous media coverage of a major event). Do not request generic headlines or decorative screenshots; request at most two total. When needed, set {{"search_query":"specific article/story query","highlight_keywords":["one or two exact headline terms"],"reason":"why the headline itself helps this scene"}}.
-Research ledger: {json.dumps(research.get('claims', []), ensure_ascii=False)}
-Return strict JSON {{"title_working":"...","logline":"...","narration_chunks":[{{"text":"...","claim_ids":["C1"],"tone":"...","audio_energy":0.5,"visual_note":"...","asset_queries":["..."] ,"news_article_screenshot":null,"music_mood":"...","sfx_cues":["...", "..."]}}],"shorts_script":{{"text":"standalone complete 30-second short, about 60-75 words","hook":"...","payoff":"...","claim_ids":["C1"]}}}}."""
+Research ledger (only these verified claims may support factual narration): {json.dumps(claims, ensure_ascii=False)}
+Return strict JSON {{"title_working":"...","logline":"...","narration_direction":"...","voice_name":"{voice_name}","narration_chunks":[{{"section_title":"...","text":"...","claim_ids":["C1"],"tone":"...","delivery_emotion":"...","delivery_pace":"measured|brisk|slow","vocal_intensity":0.5,"pause_after_seconds":0.5,"audio_energy":0.5,"retention_function":"...","visual_note":"...","asset_queries":["..."],"news_article_screenshot":null,"music_mood":"...","sfx_cues":["..."]}}],"shorts_script":{{"text":"standalone complete 30-second short, about 60-75 words","hook":"...","payoff":"...","claim_ids":["C1"],"narration_direction":"..."}}}}."""
     script = parse_json_text(response_text(openai_response(prompt)))
-    claim_ids = {c.get("claim_id") for c in research.get("claims", [])}
+    claim_ids = {c.get("claim_id") for c in claims}
     used = {cid for chunk in script.get("narration_chunks", []) for cid in chunk.get("claim_ids", [])}
     used.update(script.get("shorts_script", {}).get("claim_ids", []))
     script["unsupported_claim_ids"] = sorted(used - claim_ids)
     script["approx_word_count"] = sum(len(c.get("text", "").split()) for c in script.get("narration_chunks", []))
     script["target_met_estimate"] = script["approx_word_count"] >= 2500
+    script.setdefault("narration_direction", narration_direction)
+    script.setdefault("voice_name", voice_name)
+    script["narration_audio_generated"] = False
     return script
 
 
@@ -430,12 +512,15 @@ def generate_thumbnail(prompt: str, path: Path, *, size: str = "1536x1024") -> b
     return True
 
 
-def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnails: bool = False) -> Path:
+def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnails: bool = False,
+                niche_config: dict | None = None) -> Path:
+    niche_config = niche_config or get_niche_config(channel.get("niche", ""))
     job_id = f"{_slug(channel.get('handle', 'channel'))}_{_slug(topic)}"
     out = base_dir / "jobs" / job_id
     out.mkdir(parents=True, exist_ok=True)
-    research = research_story(topic, channel)
-    script = write_script(topic, channel, research)
+    research = research_story(topic, channel, niche_config)
+    research = verify_research_claims(topic, research, niche_config)
+    script = write_script(topic, channel, research, niche_config)
     asset_manifest = asset_research(script, out)
     screenshots = fulfill_news_headline_requests(topic, script, base_dir / "assets", job_id=job_id)
     screenshot_by_id = {row.get("asset_id"): row for row in screenshots.get("screenshots", [])}
@@ -470,6 +555,13 @@ def qa_package(job_dir: Path, final_files: list[Path] | None = None) -> list[str
     script = _json(job_dir / "script.json", {})
     if script.get("unsupported_claim_ids"):
         errors.append("Script references claim IDs absent from research ledger")
+    verified_ids = {claim.get("claim_id") for claim in _json(job_dir / "research.json", {}).get("verified_claims", [])}
+    if _json(job_dir / "research.json", {}).get("verification_summary", {}).get("status") != "passed":
+        errors.append("Research claims did not pass the independent verification stage")
+    script_ids = {claim_id for chunk in script.get("narration_chunks", []) for claim_id in chunk.get("claim_ids", [])}
+    script_ids.update(script.get("shorts_script", {}).get("claim_ids", []))
+    if script_ids - verified_ids:
+        errors.append("Script includes claims that are not marked verified or qualified")
     if not script.get("target_met_estimate"):
         errors.append("Long-form script estimate is under 2,500 words; confirm 20-minute narration before editing")
     for claim in _json(job_dir / "research.json", {}).get("claims", []):
@@ -497,6 +589,7 @@ def main() -> None:
     parser.add_argument("--base-dir", type=Path, required=True)
     parser.add_argument("--channel", help="Channel handle to process")
     parser.add_argument("--topic", help="Skip discovery and prepare this topic")
+    parser.add_argument("--niche-prompts", type=Path, default=Path(__file__).with_name("niche_prompts.json"), help="Niche-specific research, script and narrator instructions")
     parser.add_argument("--make-thumbnails", action="store_true", help="Call the configured OpenAI image model")
     parser.add_argument("--discover-assets", action="store_true", help="Search Pixabay and public archives for candidate URLs")
     parser.add_argument("--acquire-assets", action="store_true", help="Download/reuse Pixabay or public archive visuals, generate missing stills, and match local audio")
@@ -523,7 +616,9 @@ def main() -> None:
         if not ideas:
             raise SystemExit("No non-duplicate topic ideas generated")
         topic = ideas[0]["topic"]
-    job_dir = prepare_job(channel, topic, args.base_dir, generate_thumbnails=args.make_thumbnails)
+    niche_config = get_niche_config(channel.get("niche", ""), args.niche_prompts)
+    job_dir = prepare_job(channel, topic, args.base_dir, generate_thumbnails=args.make_thumbnails,
+                          niche_config=niche_config)
     if args.discover_assets:
         search_asset_sources(job_dir / "asset_requests.json")
     if args.acquire_assets:
