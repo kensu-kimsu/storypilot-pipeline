@@ -88,7 +88,7 @@ source .venv/bin/activate
 python main_pipeline.py check-deps --install --base-dir ./production
 ```
 
-`check-deps` installs the core Python packages into the active environment, then checks Python, FFmpeg/ffprobe, workspace credentials, and stage requirements. Run it without `--install` for a read-only check. By default it checks the complete workflow (topic discovery, Azure narration, and editing); use `--stage edit` for a render-only machine, `--stage narration` for voice setup, or `--stage preproduction --topic-provided` when you will supply a topic instead of discovering one.
+`check-deps` first creates the workspace and prompts for missing API keys required by the selected stages. It saves entered keys in the production workspace's `secrets.json`, so later runs reuse them. Optional provider keys are offered once during initial setup and can be skipped. It then checks Python, FFmpeg/ffprobe, credentials, and stage requirements. Add `--install` to install the core Python packages into the active environment; without it, dependency checking is read-only apart from first-run workspace/key setup. By default it checks the complete workflow (topic discovery, Azure narration, and editing); use `--stage edit` for a render-only machine, `--stage narration` for voice setup, or `--stage preproduction --topic-provided` when you will supply a topic instead of discovering one.
 
 Optional features are deliberately opt-in because some have large downloads or platform-specific setup:
 

@@ -32,7 +32,7 @@ def main() -> None:
     edit.add_argument("--encoder", choices=("auto", "cpu", "nvenc"), default="auto", help="FFmpeg video encoder (default: CPU; choose nvenc when supported)")
     setup = sub.add_parser("setup-apis", help="Create the workspace and configure API keys")
     setup.add_argument("--base-dir", type=Path, required=True, help="Production workspace and local secrets-file directory")
-    check = sub.add_parser("check-deps", help="Check or install Python packages, system tools, and stage credentials")
+    check = sub.add_parser("check-deps", help="Set up API keys, then check or install dependencies for selected stages")
     check.add_argument("--base-dir", type=Path, required=True, help="Production workspace containing secrets.json or .env")
     check.add_argument("--stage", dest="check_stage", choices=("all", "preproduction", "narration", "edit"), default="all")
     check.add_argument("--topic-provided", action="store_true", help="Skip the YouTube discovery key check")

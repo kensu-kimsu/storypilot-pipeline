@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import dependency_check
+from unittest.mock import patch
 
 
 class DependencyCheckTests(unittest.TestCase):
@@ -24,6 +25,24 @@ class DependencyCheckTests(unittest.TestCase):
 
     def test_feature_names_include_supported_optional_components(self):
         self.assertEqual(set(dependency_check.FEATURE_REQUIREMENTS), {"maps", "ocr", "portraits", "news"})
+
+    def test_full_workflow_setup_requests_required_keys_once(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {}, clear=True):
+            args = type("Args", (), {
+                "stage": "all", "topic_provided": False, "base_dir": Path(temp)
+            })()
+            with patch("workspace_setup.configure_api_keys") as configure:
+                dependency_check._configure_credentials(args)
+            configure.assert_called_once_with(
+                Path(temp).resolve(),
+                required_keys=("OPENAI_API_KEY", "YOUTUBE_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"),
+            )
+
+    def test_render_only_check_does_not_prompt_for_api_keys(self):
+        args = type("Args", (), {"stage": "edit", "topic_provided": False, "base_dir": Path(".")})()
+        with patch("workspace_setup.configure_api_keys") as configure:
+            dependency_check._configure_credentials(args)
+        configure.assert_not_called()
 
 
 if __name__ == "__main__":

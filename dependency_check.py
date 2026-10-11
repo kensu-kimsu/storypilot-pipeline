@@ -212,6 +212,44 @@ def _playwright_chromium_ok() -> bool:
         return False
 
 
+def _configure_credentials(args: argparse.Namespace) -> None:
+    """Prompt once for missing stage credentials and persist them in secrets.json."""
+    if args.stage == "edit":
+        return
+    base_dir = args.base_dir.expanduser().resolve()
+    try:
+        secrets = _read_secrets(base_dir)
+        env_file = _load_env_file(base_dir)
+    except (OSError, ValueError) as exc:
+        print(f"Credential setup could not read existing secrets: {exc}")
+        return
+
+    required: list[str] = []
+    if args.stage in {"all", "preproduction"}:
+        required.append("OPENAI_API_KEY")
+        if not args.topic_provided:
+            required.append("YOUTUBE_API_KEY")
+    if args.stage in {"all", "narration"}:
+        provider = str(
+            os.environ.get("NARRATION_PROVIDER")
+            or secrets.get("NARRATION_PROVIDER")
+            or env_file.get("NARRATION_PROVIDER")
+            or "azure"
+        ).strip().lower()
+        if provider == "azure":
+            required.extend(("AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"))
+
+    try:
+        from workspace_setup import configure_api_keys
+        configure_api_keys(base_dir, required_keys=tuple(required))
+        if required:
+            print("Required API credentials are configured or were saved during setup.")
+    except (RuntimeError, OSError) as exc:
+        # Continue into the report so users get the full missing-dependency list
+        # alongside actionable credential guidance.
+        print(f"Credential setup needs attention: {exc}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check or install StoryPilot pipeline dependencies")
     parser.add_argument("--base-dir", type=Path, default=Path("production"), help="Production workspace containing secrets.json")
@@ -240,6 +278,7 @@ def main() -> int:
                 print("  FAIL: Playwright could not install Chromium.")
                 return 1
 
+    _configure_credentials(args)
     findings, guidance = _check(args)
     print("StoryPilot dependency check")
     print(f"Python: {sys.executable}")
