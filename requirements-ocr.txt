@@ -1,0 +1,2 @@
+# Optional. Tesseract OCR itself must also be installed on the computer and on PATH.
+pytesseract>=0.3.13,<0.4

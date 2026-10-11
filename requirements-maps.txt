@@ -1,0 +1,3 @@
+# Optional, only needed for graphic_spec.kind = "geographic_map".
+matplotlib>=3.8,<4
+Cartopy>=0.23,<0.26

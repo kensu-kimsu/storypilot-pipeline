@@ -351,9 +351,9 @@ def research_story(topic: str, channel: dict, niche_config: dict | None = None) 
     niche_config = niche_config or get_niche_config(channel.get("niche", ""))
     prompt = f"""Research a factual documentary story for a {channel.get('niche')} YouTube channel.
 Topic: {topic}
-Use web search. Build a source-backed evidence ledger for a 20-minute documentary. Aim for at least eight credible, distinct sources when the topic supports it, including primary records where available. Each factual claim must have a direct source URL and a short note about what that source establishes. Separate facts, estimates, allegations, interpretations, and unresolved questions. Never fill gaps by guessing.
+Use web search. Build a source-backed evidence ledger for a 20-minute documentary. Aim for at least eight credible, distinct sources when the topic supports it, including primary records where available. Each factual claim must have a direct source URL and a short note about what that source establishes. Separate facts, estimates, allegations, interpretations, and unresolved questions. Never fill gaps by guessing. For claims that identify real places relevant to a route or event, optionally include geo_points with exact decimal latitude/longitude and a source URL that explicitly supports each coordinate; omit coordinates you cannot source.
 Niche research guidance: {niche_config.get('research_prompt', '')}
-Return strict JSON: {{"research_brief":"...","claims":[{{"claim_id":"C1","claim":"one checkable factual claim","source_title":"...","url":"https://...","publisher":"...","published_or_accessed":"...","source_type":"primary|official|academic|reporting|archive|other","support":"short paraphrase of the relevant evidence","confidence":"high|medium|low","caveat":"qualification or empty string"}}],"open_questions":["..."]}}.
+Return strict JSON: {{"research_brief":"...","claims":[{{"claim_id":"C1","claim":"one checkable factual claim","source_title":"...","url":"https://...","publisher":"...","published_or_accessed":"...","source_type":"primary|official|academic|reporting|archive|other","support":"short paraphrase of the relevant evidence","confidence":"high|medium|low","caveat":"qualification or empty string","geo_points":[{{"name":"place name in the claim","latitude":0.0,"longitude":0.0,"source_url":"direct URL supporting these coordinates"}}]}}],"open_questions":["..."]}}.
 The brief may contain only claims represented in the ledger. Prioritise original records over summaries and flag conflicting evidence explicitly."""
     response = openai_response(prompt, web_search=True)
     data = parse_json_text(response_text(response))
@@ -373,9 +373,9 @@ def verify_research_claims(topic: str, research: dict, niche_config: dict | None
     prompt = f"""Fact-check these proposed documentary claims before script writing.
 Topic: {topic}
 Niche guidance: {niche_config.get('research_prompt', '')}
-Use web search to inspect the cited source and seek independent corroboration. Check dates, names, amounts, definitions, attribution, causation, and qualifications. A claim is verified only when the cited material supports it. Mark qualified if accurate only with an explicit caveat. Mark unverified when evidence is missing or weak; disputed when reliable sources conflict. Do not infer certainty from a source's reputation alone.
+Use web search to inspect the cited source and seek independent corroboration. Check dates, names, amounts, definitions, attribution, causation, and qualifications. A claim is verified only when the cited material supports it. Mark qualified if accurate only with an explicit caveat. Mark unverified when evidence is missing or weak; disputed when reliable sources conflict. Do not infer certainty from a source's reputation alone. For every proposed geo_point, separately check the exact coordinates and return checked_geo_points only when a source directly supports the place and coordinates. Return the exact decimal values and checked source URL; omit unsupported points.
 Claims: {json.dumps(claims, ensure_ascii=False)}
-Return strict JSON: {{"results":[{{"claim_id":"C1","status":"verified|qualified|unverified|disputed","verification_note":"what the sources support or fail to support","checked_sources":[{{"title":"...","url":"...","support":"short evidence summary"}}]}}]}}.
+Return strict JSON: {{"results":[{{"claim_id":"C1","status":"verified|qualified|unverified|disputed","verification_note":"what the sources support or fail to support","checked_sources":[{{"title":"...","url":"...","support":"short evidence summary"}}],"checked_geo_points":[{{"name":"...","latitude":0.0,"longitude":0.0,"source_url":"https://..."}}]}}]}}.
 Provide at least one checked source for each verified or qualified claim. Do not invent source URLs."""
     response = openai_response(prompt, web_search=True)
     checked = parse_json_text(response_text(response)).get("results", [])
@@ -397,6 +397,32 @@ Provide at least one checked source for each verified or qualified claim. Do not
         claim["verification_status"] = status
         claim["verification_note"] = str(result.get("verification_note", "No verification result returned"))
         claim["checked_sources"] = valid_sources
+        proposed_points = claim.get("geo_points", []) if isinstance(claim.get("geo_points", []), list) else []
+        checked_points = result.get("checked_geo_points", []) if isinstance(result.get("checked_geo_points", []), list) else []
+        accepted_points = []
+        for proposed in proposed_points:
+            if not isinstance(proposed, dict):
+                continue
+            for checked_point in checked_points:
+                if not isinstance(checked_point, dict):
+                    continue
+                try:
+                    exact_match = (
+                        str(proposed.get("name", "")).casefold() == str(checked_point.get("name", "")).casefold()
+                        and float(proposed.get("latitude")) == float(checked_point.get("latitude"))
+                        and float(proposed.get("longitude")) == float(checked_point.get("longitude"))
+                        and str(proposed.get("source_url", "")) == str(checked_point.get("source_url", ""))
+                        and str(proposed.get("source_url", "")).startswith(("http://", "https://"))
+                        and str(proposed.get("source_url", "")) in {str(row.get("url", "")) for row in valid_sources}
+                        and -90 <= float(proposed.get("latitude")) <= 90
+                        and -180 <= float(proposed.get("longitude")) <= 180
+                    )
+                except (TypeError, ValueError):
+                    exact_match = False
+                if exact_match:
+                    accepted_points.append({"name": str(proposed["name"]).strip(), "latitude": float(proposed["latitude"]), "longitude": float(proposed["longitude"]), "source_url": str(proposed["source_url"])})
+                    break
+        claim["verified_geo_points"] = accepted_points
         counts[status] += 1
         if status in {"verified", "qualified"} and str(claim.get("url", "")).startswith(("http://", "https://")):
             verified.append(claim)
@@ -408,6 +434,144 @@ Provide at least one checked source for each verified or qualified claim. Do not
         "verified_claim_ids": [claim.get("claim_id") for claim in verified],
     }
     return research
+
+
+def validate_graphic_spec(spec: Any, chunk: dict, verified_claims: list[dict]) -> tuple[dict | None, str | None]:
+    """Accept only compact graphic specs supported by claims assigned to a scene."""
+    if spec in (None, {}):
+        return None, None
+    if not isinstance(spec, dict) or spec.get("kind") not in {"chart", "counter", "route_schematic", "geographic_map", "document_highlight"}:
+        return None, "Unsupported graphic kind"
+    expected_mode = {"chart": "animated_chart", "counter": "kinetic_fact", "route_schematic": "animated_map", "geographic_map": "animated_map", "document_highlight": "document_focus"}[spec["kind"]]
+    if chunk.get("visual_mode") != expected_mode:
+        return None, f"{spec['kind']} graphics require visual_mode={expected_mode}"
+    allowed_ids = {str(value) for value in chunk.get("claim_ids", [])}
+    claim_rows = {str(row.get("claim_id")): row for row in verified_claims}
+    claims = {claim_id: str(row.get("claim", "")) for claim_id, row in claim_rows.items()}
+    if not allowed_ids:
+        return None, "Graphic spec has no claim IDs assigned to this scene"
+    graphic = dict(spec)
+    graphic["title"] = str(graphic.get("title", ""))[:90]
+
+    def numeric_value(text: str, claim_id: str) -> float | None:
+        source = claims.get(claim_id, "")
+        if claim_id not in allowed_ids or not source:
+            return None
+        normalized_source = re.sub(r"\s+", " ", source.casefold())
+        normalized_text = re.sub(r"\s+", " ", text.casefold()).strip()
+        number_match = re.search(r"[-+]?\d[\d,]*(?:\.\d+)?", normalized_text)
+        if not number_match or normalized_text not in normalized_source:
+            return None
+        try:
+            value = float(number_match.group(0).replace(",", ""))
+            suffix = normalized_text[number_match.end():]
+            if re.search(r"\b(trillion|trn|tn)\b", suffix):
+                value *= 1_000_000_000_000
+            elif re.search(r"\b(billion|bn)\b", suffix):
+                value *= 1_000_000_000
+            elif re.search(r"\b(million|mn)\b", suffix):
+                value *= 1_000_000
+            elif re.search(r"\b(thousand|k)\b", suffix):
+                value *= 1_000
+            return value
+        except ValueError:
+            return None
+
+    if graphic["kind"] == "chart":
+        rows = graphic.get("items", [])
+        if not isinstance(rows, list) or not 2 <= len(rows) <= 6:
+            return None, "Charts require two to six evidence-backed data items"
+        normalized = []
+        unit_signatures = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                return None, "Chart item is not an object"
+            label = str(row.get("label", "")).strip()[:28]
+            value = str(row.get("value", "")).strip()[:32]
+            claim_id = str(row.get("claim_id", ""))
+            number = numeric_value(value, claim_id)
+            source_claim = claims.get(claim_id, "")
+            if not label or label.casefold() not in source_claim.casefold() or number is None or number < 0:
+                return None, f"Chart label/value {label!r} / {value!r} is not stated in its assigned verified claim"
+            unit = re.search(r"[-+]?\d[\d,]*(?:\.\d+)?", value)
+            suffix = value[unit.end():] if unit else value
+            suffix = re.sub(r"\b(trillion|trn|tn|billion|bn|million|mn|thousand|k)\b", "", suffix.casefold())
+            unit_signatures.add(re.sub(r"[^a-z%$]", "", suffix))
+            normalized.append({"label": label, "value": value, "numeric_value": number, "claim_id": claim_id})
+        if len(unit_signatures) > 1:
+            return None, "Chart values use different units; only comparable measures can be graphed together"
+        graphic["items"] = normalized
+    elif graphic["kind"] == "counter":
+        value = str(graphic.get("value", "")).strip()[:32]
+        claim_id = str(graphic.get("claim_id", ""))
+        number = numeric_value(value, claim_id)
+        if number is None:
+            return None, f"Counter value {value!r} is not stated in its assigned verified claim"
+        graphic["numeric_value"] = number
+    elif graphic["kind"] == "route_schematic":
+        places = graphic.get("places", [])
+        if not isinstance(places, list) or not 2 <= len(places) <= 6:
+            return None, "Route schematics require two to six sourced place labels"
+        normalized_places = []
+        for place in places:
+            if not isinstance(place, dict):
+                return None, "Route place is not an object"
+            name = str(place.get("name", "")).strip()[:28]
+            claim_id = str(place.get("claim_id", ""))
+            source = claims.get(claim_id, "")
+            if claim_id not in allowed_ids or not name or name.casefold() not in source.casefold():
+                return None, f"Route place {name!r} is not stated in its assigned verified claim"
+            normalized_places.append({"name": name, "claim_id": claim_id})
+        route_claim_ids = {place["claim_id"] for place in normalized_places}
+        if len(route_claim_ids) != 1:
+            return None, "Route order must be supported by one verified claim"
+        route_source = claims[next(iter(route_claim_ids))].casefold()
+        route_positions = [route_source.find(place["name"].casefold()) for place in normalized_places]
+        if route_positions != sorted(route_positions):
+            return None, "Route order does not match the order stated in its verified claim"
+        graphic["places"] = normalized_places
+        graphic["schematic_only"] = True
+    elif graphic["kind"] == "geographic_map":
+        points = graphic.get("points", [])
+        if not isinstance(points, list) or not 2 <= len(points) <= 8:
+            return None, "Geographic maps require two to eight independently checked locations"
+        normalized_points = []
+        route_claim_ids = set()
+        for point in points:
+            if not isinstance(point, dict):
+                return None, "Map point is not an object"
+            name = str(point.get("name", "")).strip()[:36]
+            claim_id = str(point.get("claim_id", ""))
+            claim = claim_rows.get(claim_id, {})
+            if claim_id not in allowed_ids or not name or name.casefold() not in claims.get(claim_id, "").casefold():
+                return None, "Map point is missing its assigned verified claim or place name"
+            match = next((row for row in claim.get("verified_geo_points", []) if str(row.get("name", "")).casefold() == name.casefold()), None)
+            try:
+                lat, lon = float(point.get("latitude")), float(point.get("longitude"))
+            except (TypeError, ValueError):
+                return None, f"Map coordinates for {name!r} are invalid"
+            if not match or lat != float(match["latitude"]) or lon != float(match["longitude"]):
+                return None, f"Map coordinates for {name!r} were not independently verified"
+            normalized_points.append({"name": name, "latitude": lat, "longitude": lon, "claim_id": claim_id, "source_url": match["source_url"]})
+            route_claim_ids.add(claim_id)
+        if len(route_claim_ids) != 1:
+            return None, "Geographic route points must come from one verified claim"
+        route_source = claims[next(iter(route_claim_ids))].casefold()
+        route_positions = [route_source.find(point["name"].casefold()) for point in normalized_points]
+        if route_positions != sorted(route_positions):
+            return None, "Geographic route order does not match the order stated in its verified claim"
+        if any(abs(right["longitude"] - left["longitude"]) > 180 for left, right in zip(normalized_points, normalized_points[1:])):
+            return None, "Routes crossing the international date line are not supported by this map template"
+        graphic["points"] = normalized_points
+        graphic["schematic_only"] = True
+    else:
+        claim_id = str(graphic.get("claim_id", ""))
+        phrase = re.sub(r"\s+", " ", str(graphic.get("target_text", "")).strip())
+        source = claims.get(claim_id, "")
+        if claim_id not in allowed_ids or len(phrase) < 3 or phrase.casefold() not in source.casefold():
+            return None, "Document highlight phrase must be present in an assigned verified claim"
+        graphic.update({"claim_id": claim_id, "target_text": phrase[:180]})
+    return graphic, None
 
 
 def write_script(topic: str, channel: dict, research: dict, niche_config: dict | None = None) -> dict:
@@ -425,10 +589,18 @@ Maintain attention from the first line through the ending: open on a specific ve
 Write for a natural human narrator using English. Keep sentences speakable and varied, use contractions where natural, and avoid stiff transitions, repeated rhetorical questions, forced slang, and overly polished essay language. Never put performance directions inside the words to be spoken. The narrator should follow the emotion and tone assigned to each scene; let intensity rise and fall with the evidence rather than reading every line dramatically.
 For each narration chunk, give a `tone` that the creative director can use, plus `delivery_emotion`, `delivery_pace`, `vocal_intensity` from 0.0 to 1.0, and `pause_after_seconds`. These fields guide a future TTS/narrator pass; do not write the audio itself. Overall narration direction: {narration_direction}
 Act as the visual creative director too. For each chunk choose one `visual_mode` from `minimalist_text`, `split_screen`, `animated_chart`, `document_focus`, `animated_map`, `parallax_portrait`, `kinetic_fact`, or `cinematic_broll`. Choose it because it expresses the verified evidence in that scene, not to create random variation. Add `visual_evidence`, naming the exact verified detail or source visual that should appear, and `visual_rationale`, explaining why the visual mode suits the beat. Make asset queries scene-specific and avoid generic stock searches where a document, map, chart, or relevant subject image would tell the story better. Use channel branding consistently: {json.dumps(channel.get('visual_brand', {}), ensure_ascii=False)}. Keep its font and brand colors stable; use topic palette and layout changes only when they serve this episode's story. Never invent a chart, map, document, or evidence image.
+Add optional `graphic_spec` for evidence-backed graphics only. Charts use 2-6 items with label, exact numeric value phrase copied from a verified claim, and its claim_id. Counters use the exact numeric phrase and claim_id. Route schematics use 2-6 place names copied exactly from the same verified claim, in order, labelled schematic and not to scale. For `geographic_map`, use 2-8 exact coordinates only from that claim's independently checked geo_points; include name, exact decimal latitude/longitude, and claim_id. Never guess coordinates. For `document_highlight`, provide claim_id and a short exact phrase appearing in that verified claim; the renderer must find the phrase with OCR in the selected document image before highlighting it. Set graphic_spec to null if evidence or asset support is missing. The program rejects unsupported graphic data. For a true 2.5D `parallax_portrait`, optionally provide `parallax_assets` with distinct `portrait_query` and `background_query`; Python must use a separate background plate so the portrait is not duplicated. This is optional and should be used only if both relevant images can be sourced/generated.
 For each narration chunk, decide whether a real news headline is creatively necessary. Normally set "news_article_screenshot": null. Request one only when an actual news headline materially strengthens the scene (for example, showing contemporaneous media coverage of a major event). Do not request generic headlines or decorative screenshots; request at most two total. When needed, set {{"search_query":"specific article/story query","highlight_keywords":["one or two exact headline terms"],"reason":"why the headline itself helps this scene"}}.
 Research ledger (only these verified claims may support factual narration): {json.dumps(claims, ensure_ascii=False)}
-Return strict JSON {{"title_working":"...","logline":"...","narration_direction":"...","voice_name":"{voice_name}","narration_chunks":[{{"section_title":"...","text":"...","claim_ids":["C1"],"tone":"...","delivery_emotion":"...","delivery_pace":"measured|brisk|slow","vocal_intensity":0.5,"pause_after_seconds":0.5,"audio_energy":0.5,"retention_function":"...","visual_mode":"one allowed mode","visual_evidence":"specific verified story detail to show","visual_rationale":"why this treatment fits the beat","visual_note":"...","asset_queries":["..."],"news_article_screenshot":null,"music_mood":"...","sfx_cues":["..."]}}],"shorts_script":{{"text":"standalone complete 30-second short, about 60-75 words","hook":"...","payoff":"...","claim_ids":["C1"],"narration_direction":"..."}}}}."""
+Return strict JSON {{"title_working":"...","logline":"...","narration_direction":"...","voice_name":"{voice_name}","narration_chunks":[{{"section_title":"...","text":"...","claim_ids":["C1"],"tone":"...","delivery_emotion":"...","delivery_pace":"measured|brisk|slow","vocal_intensity":0.5,"pause_after_seconds":0.5,"audio_energy":0.5,"retention_function":"...","visual_mode":"one allowed mode","visual_evidence":"specific verified story detail to show","visual_rationale":"why this treatment fits the beat","visual_note":"...","asset_queries":["..."],"parallax_assets":null,"graphic_spec":null,"news_article_screenshot":null,"music_mood":"...","sfx_cues":["..."]}}],"shorts_script":{{"text":"standalone complete 30-second short, about 60-75 words","hook":"...","payoff":"...","claim_ids":["C1"],"narration_direction":"..."}}}}."""
     script = parse_json_text(response_text(openai_response(prompt)))
+    graphic_issues = []
+    for index, chunk in enumerate(script.get("narration_chunks", []), 1):
+        validated, issue = validate_graphic_spec(chunk.get("graphic_spec"), chunk, claims)
+        chunk["graphic_spec"] = validated
+        if issue:
+            graphic_issues.append({"chunk": index, "reason": issue})
+    script["graphic_spec_issues"] = graphic_issues
     claim_ids = {c.get("claim_id") for c in claims}
     used = {cid for chunk in script.get("narration_chunks", []) for cid in chunk.get("claim_ids", [])}
     used.update(script.get("shorts_script", {}).get("claim_ids", []))
@@ -446,6 +618,16 @@ def asset_research(script: dict, out_dir: Path) -> dict:
     """Compile the AI creative brief into one per-video downloader handoff."""
     requests_list, seen = [], set()
     for i, chunk in enumerate(script.get("narration_chunks", []), 1):
+        parallax = chunk.get("parallax_assets")
+        if isinstance(parallax, dict) and chunk.get("visual_mode") == "parallax_portrait":
+            for role, field in (("portrait_foreground", "portrait_query"), ("parallax_background", "background_query")):
+                query = str(parallax.get(field, "")).strip()
+                if query:
+                    requests_list.append({"asset_id": f"asset_{len(requests_list)+1:03d}", "query": query,
+                        "category": "picture", "segment": i, "parallax_role": role,
+                        "purpose": "Source image for a layered 2.5D portrait scene; foreground and background must be distinct",
+                        "suggested_sources": ["Pixabay API", "Wikimedia Commons (no key)", "Internet Archive (no key)", "official company newsroom", "OpenAI generated image"],
+                        "source_url": None, "local_path": None, "rights_status": "unknown", "license_evidence": None, "download_status": "not_downloaded"})
         for query_index, query in enumerate(chunk.get("asset_queries", [])):
             category = "video" if query_index % 2 == 0 else "picture"
             key = (str(query).strip().lower(), category)

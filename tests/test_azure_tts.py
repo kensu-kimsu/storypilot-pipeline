@@ -118,8 +118,9 @@ class AzureTtsTests(unittest.TestCase):
             media.write_bytes(b"image")
             script_path = root / "script.json"
             script_path.write_text(json.dumps({
-                "title_working": "Demo", "narration_chunks": [{"text": "A fact.", "asset_queries": ["portrait"], "tone": "suspense", "visual_mode": "document_focus", "visual_evidence": "A verified court record", "visual_rationale": "Show the original source", "sfx_cues": []}]
+                "title_working": "Demo", "narration_chunks": [{"text": "A fact.", "claim_ids": ["C1"], "graphic_spec": {"kind": "counter"}, "asset_queries": ["portrait"], "tone": "suspense", "visual_mode": "document_focus", "visual_evidence": "A verified court record", "visual_rationale": "Show the original source", "sfx_cues": []}]
             }), encoding="utf-8")
+            (root / "research.json").write_text(json.dumps({"verified_claims": [{"claim_id": "C1", "claim": "A verified fact."}]}), encoding="utf-8")
             (root / "job.json").write_text(json.dumps({"topic": "A topic", "channel_id": "@history", "channel": {"handle": "@history", "visual_brand": {"primary_font": "Montserrat"}}}), encoding="utf-8")
             selection_path = root / "selected_assets.json"
             selection_path.write_text(json.dumps({"assets": [{
@@ -136,8 +137,36 @@ class AzureTtsTests(unittest.TestCase):
             self.assertEqual(timed["assets"]["asset1"]["path"], str(media))
             self.assertEqual(timed["segments"][0]["visual_mode"], "document_focus")
             self.assertEqual(timed["segments"][0]["visual_evidence"], "A verified court record")
+            self.assertEqual(timed["segments"][0]["claim_ids"], ["C1"])
+            self.assertEqual(timed["segments"][0]["graphic_spec"], {"kind": "counter"})
+            self.assertEqual(timed["verified_claims"][0]["claim_id"], "C1")
             self.assertEqual(timed["channel_id"], "@history")
             self.assertEqual(timed["visual_brand"]["primary_font"], "Montserrat")
+
+    def test_timed_job_maps_parallax_roles_to_separate_assets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            portrait, backdrop = root / "portrait.png", root / "background.png"
+            portrait.write_bytes(b"portrait")
+            backdrop.write_bytes(b"background")
+            script = root / "script.json"
+            script.write_text(json.dumps({"narration_chunks": [{
+                "text": "A portrait beat.", "asset_queries": [], "tone": "standard",
+                "visual_mode": "parallax_portrait", "parallax_assets": {
+                    "portrait_query": "archival portrait", "background_query": "smoky office"},
+            }]}), encoding="utf-8")
+            manifest = root / "selected_assets.json"
+            manifest.write_text(json.dumps({"assets": [
+                {"query": "archival portrait", "category": "picture", "segment": 1, "parallax_role": "portrait_foreground",
+                 "selected": {"asset_id": "person", "path": str(portrait), "category": "picture"}},
+                {"query": "smoky office", "category": "picture", "segment": 1, "parallax_role": "parallax_background",
+                 "selected": {"asset_id": "scene", "path": str(backdrop), "category": "picture"}},
+            ]}), encoding="utf-8")
+            timed = build_timed_edit_job(script, {"audio_file": str(root / "n.wav"), "duration_seconds": 2,
+                "caption_file": str(root / "c.srt"), "word_timestamps_file": str(root / "words.json"),
+                "chunks": [{"chunk_index": 0, "start": 0, "end": 2}]}, manifest)
+            self.assertEqual(timed["segments"][0]["parallax_foreground_asset_id"], "person")
+            self.assertEqual(timed["segments"][0]["asset_ids"], ["person", "scene"])
 
 
 if __name__ == "__main__":

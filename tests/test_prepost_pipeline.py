@@ -10,12 +10,59 @@ from prepost_pipeline import (
     get_niche_config,
     is_duplicate,
     qa_package,
+    validate_graphic_spec,
     verify_research_claims,
     write_script,
 )
 
 
 class PrePostPipelineTests(unittest.TestCase):
+    def test_graphic_specs_accept_only_values_linked_to_scene_claims(self):
+        claims = [{"claim_id": "C1", "claim": "Revenue rose from 2.0 billion dollars in 2019 to 2.5 billion dollars in 2020."}]
+        chunk = {"claim_ids": ["C1"], "visual_mode": "animated_chart"}
+        spec, issue = validate_graphic_spec({
+            "kind": "chart", "title": "Revenue", "items": [
+                {"label": "2019", "value": "2.0 billion dollars", "claim_id": "C1"},
+                {"label": "2020", "value": "2.5 billion dollars", "claim_id": "C1"},
+            ],
+        }, chunk, claims)
+        self.assertIsNone(issue)
+        self.assertEqual(spec["items"][0]["numeric_value"], 2_000_000_000)
+        rejected, issue = validate_graphic_spec({
+            "kind": "counter", "value": "7 billion dollars", "claim_id": "C1",
+        }, {"claim_ids": ["C1"], "visual_mode": "kinetic_fact"}, claims)
+        self.assertIsNone(rejected)
+        self.assertIn("not stated", issue)
+
+    def test_geographic_map_requires_independently_checked_coordinates(self):
+        claims = [{"claim_id": "C1", "claim": "The route ran from London to Paris.", "verified_geo_points": [
+            {"name": "London", "latitude": 51.5072, "longitude": -0.1276, "source_url": "https://example.org/coords"},
+            {"name": "Paris", "latitude": 48.8566, "longitude": 2.3522, "source_url": "https://example.org/coords"},
+        ]}]
+        chunk = {"claim_ids": ["C1"], "visual_mode": "animated_map"}
+        spec, issue = validate_graphic_spec({"kind": "geographic_map", "title": "Route", "points": [
+            {"name": "London", "latitude": 51.5072, "longitude": -0.1276, "claim_id": "C1"},
+            {"name": "Paris", "latitude": 48.8566, "longitude": 2.3522, "claim_id": "C1"},
+        ]}, chunk, claims)
+        self.assertIsNone(issue)
+        self.assertEqual(spec["points"][1]["source_url"], "https://example.org/coords")
+        bad, issue = validate_graphic_spec({"kind": "geographic_map", "points": [
+            {"name": "London", "latitude": 51.5, "longitude": -0.1276, "claim_id": "C1"},
+            {"name": "Paris", "latitude": 48.8566, "longitude": 2.3522, "claim_id": "C1"},
+        ]}, chunk, claims)
+        self.assertIsNone(bad)
+        self.assertIn("not independently verified", issue)
+
+    def test_document_highlight_phrase_must_be_claim_linked(self):
+        claims = [{"claim_id": "C1", "claim": "The company filed for bankruptcy in 2001."}]
+        chunk = {"claim_ids": ["C1"], "visual_mode": "document_focus"}
+        spec, issue = validate_graphic_spec({"kind": "document_highlight", "claim_id": "C1", "target_text": "filed for bankruptcy"}, chunk, claims)
+        self.assertIsNone(issue)
+        self.assertEqual(spec["target_text"], "filed for bankruptcy")
+        bad, issue = validate_graphic_spec({"kind": "document_highlight", "claim_id": "C1", "target_text": "secret plot"}, chunk, claims)
+        self.assertIsNone(bad)
+        self.assertIn("verified claim", issue)
+
     def test_niche_profiles_supply_english_expressive_voice_and_retention_guidance(self):
         config = get_niche_config("business history documentaries")
         self.assertEqual(config["voice_name"], "en-US-Ethan:MAI-Voice-2.1")
@@ -35,6 +82,22 @@ class PrePostPipelineTests(unittest.TestCase):
             checked = verify_research_claims("Example", research)
         self.assertEqual([claim["claim_id"] for claim in checked["verified_claims"]], ["C1"])
         self.assertEqual(checked["verification_summary"]["status"], "passed")
+
+    def test_coordinate_is_accepted_only_when_verifier_returns_exact_point_and_source(self):
+        research = {"claims": [{"claim_id": "C1", "claim": "A documented event in London.", "url": "https://example.org/event", "geo_points": [
+            {"name": "London", "latitude": 51.5072, "longitude": -0.1276, "source_url": "https://example.org/coordinates"},
+        ]}]}
+        reply = {"output_text": json.dumps({"results": [{"claim_id": "C1", "status": "verified", "verification_note": "Confirmed", "checked_sources": [
+            {"title": "Record", "url": "https://example.org/event", "support": "Confirms event"},
+            {"title": "Coordinates", "url": "https://example.org/coordinates", "support": "Confirms coordinates"}], "checked_geo_points": [
+            {"name": "London", "latitude": 51.5072, "longitude": -0.1276, "source_url": "https://example.org/coordinates"}]}]})}
+        with patch("prepost_pipeline.openai_response", return_value=reply):
+            checked = verify_research_claims("Example", research)
+        self.assertEqual(len(checked["verified_claims"][0]["verified_geo_points"]), 1)
+        checked["claims"][0]["geo_points"][0]["latitude"] = 51.5
+        with patch("prepost_pipeline.openai_response", return_value=reply):
+            checked = verify_research_claims("Example", checked)
+        self.assertEqual(checked["verified_claims"][0]["verified_geo_points"], [])
 
     def test_script_prompt_sets_narrator_delivery_and_retention_contract(self):
         research = {"verified_claims": [{"claim_id": "C1", "claim": "A documented fact", "url": "https://example.org"}]}

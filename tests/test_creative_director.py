@@ -44,6 +44,19 @@ class CreativeDirectorTests(unittest.TestCase):
         plan = build_edit_plan(self.job)
         self.assertTrue(any(shot["asset_id"] == "portrait" for shot in plan["shots"]))
 
+    def test_parallax_scene_uses_portrait_cutout_over_distinct_background_asset(self):
+        self.job["assets"]["backdrop"] = {"path": "/tmp/backdrop.png", "kind": "image"}
+        self.job["segments"] = [{
+            "start": 0.0, "end": 4.0, "text": "The portrait tells the story.", "tone": "dramatic_realization",
+            "visual_mode": "parallax_portrait", "asset_ids": ["portrait", "backdrop"],
+            "parallax_foreground_asset_id": "portrait",
+        }]
+        self.job["narration_duration"] = 4.0
+        plan = build_edit_plan(self.job)
+        self.assertTrue(plan["shots"])
+        self.assertTrue(all(shot["asset_id"] == "backdrop" for shot in plan["shots"]))
+        self.assertTrue(all(shot["parallax_foreground_asset_id"] == "portrait" for shot in plan["shots"]))
+
     def test_scene_directed_visual_and_channel_brand_are_preserved(self):
         self.job["visual_brand"] = {
             "primary_font": "Aptos Display", "brand_accent": "#12ABCD",

@@ -356,6 +356,8 @@ def synthesize_script(script_path: Path, output_dir: Path, *, voice: str | None 
 def build_timed_edit_job(script_path: Path, narration: dict, assets_manifest_path: Path | None = None) -> dict:
     """Join synthesized chunk timings and acquired media into creative_director input."""
     script = json.loads(script_path.read_text(encoding="utf-8"))
+    research_path = script_path.parent / "research.json"
+    research = json.loads(research_path.read_text(encoding="utf-8")) if research_path.is_file() else {}
     manifest = json.loads(assets_manifest_path.read_text(encoding="utf-8")) if assets_manifest_path and assets_manifest_path.exists() else {"assets": [], "unresolved": []}
     selected_by_query: dict[str, list[dict[str, Any]]] = {}
     assets: dict[str, dict[str, Any]] = {}
@@ -374,6 +376,7 @@ def build_timed_edit_job(script_path: Path, narration: dict, assets_manifest_pat
             "duration": float(picked.get("duration") or 0), "source": picked.get("source"),
             "source_url": picked.get("source_url"), "license": license_value,
             "creator": picked.get("creator"), "rights_status": rights_status,
+            "query": str(row.get("query", "")),
         }
         selected_by_query.setdefault(str(row.get("query", "")).strip().lower(), []).append({"asset_id": str(asset_id), "category": category})
 
@@ -389,11 +392,22 @@ def build_timed_edit_job(script_path: Path, narration: dict, assets_manifest_pat
             visual = next((a for a in options if a["category"] in {"picture", "video", "generated"}), None)
             if visual and visual["asset_id"] not in visual_ids:
                 visual_ids.append(visual["asset_id"])
-        sfx_ids, music_ids = [], []
+        parallax_roles = {}
+        for row in manifest.get("assets", []):
+            if row.get("segment") != timing["chunk_index"] + 1 or row.get("parallax_role") not in {"portrait_foreground", "parallax_background"}:
+                continue
+            selected = row.get("selected") or {}
+            selected_id = selected.get("asset_id")
+            if selected_id:
+                parallax_roles[row["parallax_role"]] = str(selected_id)
+                if str(selected_id) not in visual_ids:
+                    visual_ids.append(str(selected_id))
+        sfx_ids, music_ids, sfx_by_cue = [], [], {}
         for cue in chunk.get("sfx_cues", []):
             match = next((a for a in selected_by_query.get(str(cue).strip().lower(), []) if a["category"] == "sfx"), None)
             if match:
                 sfx_ids.append(match["asset_id"])
+                sfx_by_cue[str(cue)] = match["asset_id"]
         for row in manifest.get("assets", []):
             if row.get("segment") == timing["chunk_index"] + 1 and row.get("category") == "music":
                 picked_id = (row.get("selected") or {}).get("asset_id")
@@ -406,8 +420,10 @@ def build_timed_edit_job(script_path: Path, narration: dict, assets_manifest_pat
             "visual_evidence": chunk.get("visual_evidence", ""),
             "visual_rationale": chunk.get("visual_rationale", ""),
             "overlay_text": chunk.get("overlay_text", ""), "visual_note": chunk.get("visual_note", ""),
+            "claim_ids": chunk.get("claim_ids", []), "graphic_spec": chunk.get("graphic_spec"),
             "asset_ids": visual_ids, "asset_queries": chunk.get("asset_queries", []),
-            "sfx_candidates": chunk.get("sfx_cues", []), "sfx_asset_ids": sfx_ids,
+            "parallax_foreground_asset_id": parallax_roles.get("portrait_foreground"),
+            "sfx_candidates": chunk.get("sfx_cues", []), "sfx_asset_ids": sfx_ids, "sfx_by_cue": sfx_by_cue,
             "music_mood": chunk.get("music_mood", "low_tension"), "music_asset_ids": music_ids,
             "delivery_emotion": chunk.get("delivery_emotion", "neutral"),
         })
@@ -453,6 +469,7 @@ def build_timed_edit_job(script_path: Path, narration: dict, assets_manifest_pat
         "asset_requirements": [row for row in manifest.get("assets", []) + manifest.get("unresolved", [])
                                if row.get("category") != "news_headline_screenshot"] + screenshot_requirements,
         "segments": segments, "assets": assets,
+        "verified_claims": research.get("verified_claims", []),
     }
 
 

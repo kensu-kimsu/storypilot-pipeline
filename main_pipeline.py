@@ -1,7 +1,8 @@
 """Main CLI for the production pipeline.
 
 `preproduction` builds the research, script, asset, and packaging files. `edit`
-builds the editable timeline after narration timings and approved assets exist.
+builds the story-led timeline and renders a QA-checked local MP4 after narration
+timings and approved assets exist. It never uploads the video.
 """
 from pathlib import Path
 import argparse
@@ -23,10 +24,12 @@ def main() -> None:
     pre.add_argument("--make-thumbnails", action="store_true")
     pre.add_argument("--acquire-assets", action="store_true")
     pre.add_argument("--youtube-audio-library-dir", type=Path)
-    edit = sub.add_parser("edit", help="Build story-led FCPXML/JSON assistant-editor handoff")
+    edit = sub.add_parser("edit", help="Build the edit plan and render a QA-checked MP4 locally")
     edit.add_argument("job_json", type=Path, help="Timed narration segments and approved local asset manifest")
     edit.add_argument("--out", type=Path, required=True, help="Directory for the timeline handoff")
+    edit.add_argument("--render-dir", type=Path, help="Directory for the final MP4 and QA report (defaults to a rendered_outputs folder beside the handoff)")
     edit.add_argument("--style-history", type=Path, help="Cross-video style history JSON (defaults to workspace/style_history.json)")
+    edit.add_argument("--encoder", choices=("auto", "cpu", "nvenc"), default="auto", help="FFmpeg video encoder (default: CPU; choose nvenc when supported)")
     setup = sub.add_parser("setup-apis", help="Create the workspace and configure API keys")
     setup.add_argument("--base-dir", type=Path, required=True, help="Production workspace and local secrets-file directory")
     args = parser.parse_args()
@@ -58,10 +61,17 @@ def main() -> None:
         preproduction_main()
         return
     plan = build_package(args.job_json, args.out, args.style_history)
-    print(f"Handoff ready: {args.out.resolve()}")
+    print(f"Edit package ready: {args.out.resolve()}")
     print(f"Planned {len(plan['shots'])} shots for {plan['duration']:.1f}s")
     print(f"Channel style identity: {plan['visual_brand'].get('primary_font')} / {plan['visual_brand'].get('brand_accent')}")
-    print("The timeline plan and style history are ready. This command does not render an MP4 or upload it.")
+    from renderer import render_final_video
+    render_dir = args.render_dir or args.out.parent / "rendered_outputs"
+    result = render_final_video(args.job_json, render_dir, plan, encoder=args.encoder)
+    print(f"Final MP4: {result['video_path']}")
+    print(f"QA status: {result['status']} ({result['duration_seconds']:.1f}s, {result['canvas']['width']}x{result['canvas']['height']})")
+    print(f"Motion graphics rendered: {len(result.get('motion_graphics', []))}")
+    print(f"QA report: {(render_dir / (Path(result['video_path']).stem + '_qa.json')).resolve()}")
+    print("Upload: not performed")
 
 
 if __name__ == "__main__":

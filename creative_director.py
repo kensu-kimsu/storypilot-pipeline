@@ -1,9 +1,4 @@
-"""Create a story-led, creatively varied, editable documentary timeline package.
-
-This module plans and exports an edit. It deliberately does not render or upload a
-finished video: the FCPXML/JSON outputs are the assistant-editor handoff for a
-human polish pass in Final Cut Pro or a compatible editor.
-"""
+"""Plan and export a story-led documentary timeline for the local renderer."""
 from __future__ import annotations
 
 import argparse
@@ -245,6 +240,13 @@ def build_edit_plan(job: dict, style_history: list[dict] | None = None) -> dict:
         previous_mode = mode
         low, high = _duration_range(tone, energy)
         usable_assets = _candidate_asset_ids(segment, assets, mode)
+        foreground_asset_id = segment.get("parallax_foreground_asset_id") if mode == "parallax_portrait" else None
+        if foreground_asset_id not in usable_assets or assets.get(foreground_asset_id, {}).get("kind") not in {"image", "picture"}:
+            foreground_asset_id = None
+        if foreground_asset_id:
+            # The base asset is a separate background plate; do not leave the
+            # portrait in it where it would appear as a doubled/ghosted subject.
+            usable_assets = [asset_id for asset_id in usable_assets if asset_id != foreground_asset_id]
         if mode == "minimalist_text":
             # Still keep an optional portrait/document as an underlay, but the mode
             # itself directs the editor to use a dark field and one gold line.
@@ -265,6 +267,7 @@ def build_edit_plan(job: dict, style_history: list[dict] | None = None) -> dict:
             if shot_index > 0 and mode == "split_screen" and rng.random() < 0.35:
                 shot_mode = "kinetic_fact"
             asset = assets.get(asset_id, {}) if asset_id else {}
+            sfx_cue = rng.choice(segment.get("sfx_candidates", ["paper_rustle", "camera_shutter", "low_impact", "none"]))
             shot = {
                 "shot_id": f"{job['job_id']}_s{seg_index + 1:03d}_{shot_index + 1:02d}",
                 "start": round(t, 3),
@@ -277,17 +280,22 @@ def build_edit_plan(job: dict, style_history: list[dict] | None = None) -> dict:
                 "visual_mode": shot_mode,
                 "visual_evidence": segment.get("visual_evidence", ""),
                 "visual_rationale": segment.get("visual_rationale", segment.get("visual_note", "")),
+                "graphic_spec": segment.get("graphic_spec") if shot_index == 0 else None,
+                "claim_ids": segment.get("claim_ids", []),
                 "style_selection": selection_reason,
                 "asset_id": asset_id,
                 "asset_path": asset.get("path"),
                 "asset_kind": asset.get("kind", "generated_placeholder" if asset_id is None else "video"),
+                "parallax_foreground_asset_id": foreground_asset_id if shot_mode == "parallax_portrait" else None,
                 "overlay_text": segment.get("overlay_text", ""),
                 "palette": palette,
                 "caption_position": segment.get("caption_position") or _caption_position(brand, shot_mode),
                 "type_treatment": TYPE_TREATMENTS.get(shot_mode, "restrained_lower_third"),
                 "camera": _camera_motion(rng, shot_mode),
                 "transition_out": rng.choice(["hard_cut", "short_dissolve", "match_cut", "whip_pan"]),
-                "sfx_cue": rng.choice(segment.get("sfx_candidates", ["paper_rustle", "camera_shutter", "low_impact", "none"])),
+                "sfx_cue": sfx_cue,
+                "sfx_asset_id": (segment.get("sfx_by_cue") or {}).get(sfx_cue),
+                "music_asset_ids": segment.get("music_asset_ids", []),
                 "music_mood": segment.get("music_mood", "low_tension"),
                 "editor_note": _editor_note(shot_mode, segment),
             }
@@ -393,7 +401,7 @@ def prepare_assets_before_edit(job: dict, job_path: Path, report_path: Path) -> 
         category = row.get("category")
         query = str(row.get("query", "")).strip()
         if category in {"picture", "video", "music", "sfx"} and query:
-            requests_to_retry.append({key: row[key] for key in ("asset_id", "query", "category", "purpose", "segment", "suggested_sources", "max_duration_seconds") if key in row})
+            requests_to_retry.append({key: row[key] for key in ("asset_id", "query", "category", "purpose", "segment", "suggested_sources", "max_duration_seconds", "parallax_role") if key in row})
 
     if requests_to_retry:
         # Load credentials without prompting for unrelated providers at edit time.
@@ -418,7 +426,7 @@ def prepare_assets_before_edit(job: dict, job_path: Path, report_path: Path) -> 
                     row["status"] = result.get("status", "downloaded_or_generated")
             job["assets"] = job.get("assets", {})
             by_query_existing = {str(row.get("query", "")).strip().lower(): row for row in rows}
-            for segment in job.get("segments", []):
+            for segment_index, segment in enumerate(job.get("segments", []), 1):
                 ids = list(segment.get("asset_ids", []))
                 for query in segment.get("asset_queries", []):
                     row = by_query_existing.get(str(query).strip().lower())
@@ -426,6 +434,17 @@ def prepare_assets_before_edit(job: dict, job_path: Path, report_path: Path) -> 
                     media_id = picked.get("asset_id")
                     if media_id and Path(picked.get("path", "")).is_file() and media_id not in ids:
                         ids.append(media_id)
+                for row in rows:
+                    if int(row.get("segment", 0) or 0) != segment_index or row.get("parallax_role") not in {"portrait_foreground", "parallax_background"}:
+                        continue
+                    picked = row.get("selected") or {}
+                    media_id = picked.get("asset_id")
+                    if media_id and Path(picked.get("path", "")).is_file():
+                        media_id = str(media_id)
+                        if media_id not in ids:
+                            ids.append(media_id)
+                        if row.get("parallax_role") == "portrait_foreground":
+                            segment["parallax_foreground_asset_id"] = media_id
                 segment["asset_ids"] = ids
             for row in rows:
                 picked = row.get("selected") or {}

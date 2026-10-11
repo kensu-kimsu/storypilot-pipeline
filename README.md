@@ -4,7 +4,7 @@ StoryPilot is a Python-assisted production workflow for fact-led YouTube documen
 
 ## Current implementation boundary
 
-This repository automates **pre-production, Azure or local Fish Speech narration/caption preparation, media acquisition, and the edit handoff**. The `edit` command checks asset readiness, retries missing manifest assets through configured sources, writes `edit_readiness.json`, and blocks if required files remain missing. It still does not render a finished MP4, upload to YouTube, or start/read YouTube's native thumbnail experiment. The FCPXML is an assistant-editor handoff, not a completed or QA-passed video.
+This repository automates **pre-production, Azure or local Fish Speech narration/caption preparation, media acquisition, story-led editing, and local MP4 rendering**. The `edit` command checks asset readiness, retries missing manifest assets through configured sources, writes `edit_readiness.json`, and blocks if required files remain missing. It renders an MP4, runs technical QA, and saves a QA report. It does not upload to YouTube or start/read YouTube's native thumbnail experiment.
 
 ## Story-led variable editing
 
@@ -16,7 +16,7 @@ StoryPilot keeps channel identity stable and lets the verified story guide episo
 4. **Controlled variation:** cut ranges, camera movement, caption zones, type treatments, transitions, and sound cues respond to the scene tone and energy. Captions retain the configured channel font; their safe-zone placement can move to suit the layout.
 5. **Across-video memory:** the edit command reads and updates `style_history.json` in the production workspace. It tracks recent scene modes per channel and nudges automatic choices away from overused modes. A scene-specific mode from the creative director takes priority over that nudge.
 
-This history helps the edit plan avoid falling into the same visual rhythm. It is not a monetization bypass or a guarantee of YouTube Partner Program approval. Original research, meaningful narration and analysis, topic-specific evidence, and viewer value still matter. The current code writes these decisions into JSON and edit notes; because final MP4 rendering is not implemented, the style, captions, animations, transitions, and audio mix are not yet fully applied to rendered pixels and sound.
+This history helps the edit plan avoid falling into the same visual rhythm. It is not a monetization bypass or a guarantee of YouTube Partner Program approval. Original research, meaningful narration and analysis, topic-specific evidence, and viewer value still matter. The renderer applies captions, text treatments, image motion, transitions, selected music/SFX, and evidence-checked graphics, including optional coordinate maps, OCR document highlights, and layered portrait cutouts.
 
 ### Channel style configuration
 
@@ -34,15 +34,18 @@ Add a `visual_brand` object to each entry in `channels.json`. `channels.example.
 }
 ```
 
-The editor handoff records this identity and each shot's topic palette, visual mode, evidence/rationale, caption position, and text treatment. Current palette selection is a topic heuristic with an optional job-level override. Fonts and overlays are planning metadata; the current FCPXML does not render those overlays.
+The edit package records this identity and each shot's topic palette, visual mode, evidence/rationale, caption position, and text treatment. The MP4 renderer applies the selected font and text overlay where available. Palette selection is a topic heuristic with an optional job-level override.
 
 ### Edit planning command
 
 ```powershell
 python main_pipeline.py edit `
   "D:\YouTubeProduction\jobs\job-name\timed_edit_job.json" `
-  --out "D:\YouTubeProduction\jobs\job-name\edit_handoff"
+  --out "D:\YouTubeProduction\jobs\job-name\edit_handoff" `
+  --render-dir "D:\YouTubeProduction\rendered_outputs"
 ```
+
+The default `auto` uses CPU encoding for reliable compatibility. Use `--encoder nvenc` only when FFmpeg and an NVIDIA driver support NVENC.
 
 The command automatically uses `D:\YouTubeProduction\style_history.json` based on the timed job's workspace location. To use a different history file, add `--style-history "D:\path\to\style_history.json"`. History records contain channel key, job ID, topic, timestamp, and a compact style signature; they do not store scripts, credentials, or media.
 
@@ -164,9 +167,8 @@ That discovery mode needs `YOUTUBE_API_KEY`. YouTube's public counters do not pr
 | Asset discovery (`--discover-assets`) | Searches no-key Commons, Internet Archive, Library of Congress, and NASA collections. It adds source candidates and links to the manifest. | `asset_requests.json` updated with `candidates`. |
 | Asset acquisition (`--acquire-assets`) | Reuses matches from the catalog first, then tries Pixabay (if configured) and the public archive adapters. It can generate a clearly labeled illustrative still when no photo matches. It indexes local Audio Library seeds and can try Freesound previews. | `selected_assets.json`; reusable files in shared `assets/` folders; SQLite catalog and JSON sidecars. Unavailable assets are listed under `unresolved`. |
 | Metadata/thumbnails | Writes title hypotheses, description, tags, and two thumbnail briefs. With `--make-thumbnails`, asks OpenAI for two thumbnail images. | `metadata_ab_test.json` plus `thumbnail_1.png` and `thumbnail_2.png` when generation succeeds. |
-| QA helper | `qa_package()` can check package files, claim IDs/URLs, script-length estimate, rights metadata, and optionally supplied final files, but the current CLI does not call it as an automatic gate. | No automatic QA report is produced by the current command. Final video QA is not implemented. |
-| Pre-edit asset check and edit handoff | Verifies referenced files, retries missing manifest items through configured sources, and refuses handoff if required assets or captions remain missing. Applies channel style, per-scene direction, and recent per-channel style history to its plan. | `edit_readiness.json`; on success, FCPXML, `timeline.json`, `EDIT_NOTES.md`, and updated workspace `style_history.json`. This is still an editor handoff, not an MP4. |
-| Final render and upload | Not implemented in this repository version. | Render the timeline in a compatible editor, verify duration/audio/captions/aspect ratio, then upload privately yourself. |
+| Pre-edit asset check and edit plan | Verifies referenced files, retries missing manifest assets through configured sources, and refuses to render if required assets or captions remain missing. Applies channel style, per-scene direction, and recent per-channel style history. | `edit_readiness.json`; FCPXML, `timeline.json`, `EDIT_NOTES.md`, and updated workspace `style_history.json`. |
+| Final MP4 render and technical QA | Renders locally with FFmpeg; burns English captions, applies shot transitions and text treatments, animates verified chart/counter/route specs, adds slow motion to still images, mixes available narration/music/SFX, and checks duration, audio/video streams, canvas, aspect ratio, and a basic visual-diversity proxy. No upload action exists. | `<job>_long.mp4` or `<job>_short.mp4` in `rendered_outputs/`, plus a QA JSON report. Failed QA leaves a `_qa_failed.mp4` and report. |
 
 Each job is written to `jobs/<channel-topic>/`. Typical files are `research.json`, `script.json`, `asset_requests.json`, `selected_assets.json` (when acquisition is run), `metadata_ab_test.json`, optional thumbnail PNGs, and `job.json`.
 
@@ -189,13 +191,13 @@ The pipeline does not automatically download from YouTube Audio Library. Freesou
 
 ## 6. Edit handoff
 
-The edit stage expects a JSON job that includes timed narration segments, paths to approved local assets, and caption text/timing. See `example_job.json` for the shape. Then run:
+The edit stage expects a JSON job that includes timed narration segments, paths to approved local assets, and an English SRT caption file. See `example_job.json` for the shape. Install FFmpeg and make `ffmpeg` and `ffprobe` available on `PATH`. Then run:
 
 ```bash
-python main_pipeline.py edit path/to/timed_edit_job.json --out "D:\YouTubeProduction\jobs\example\edit_handoff"
+python main_pipeline.py edit path/to/timed_edit_job.json --out "D:\YouTubeProduction\jobs\example\edit_handoff" --render-dir "D:\YouTubeProduction\rendered_outputs"
 ```
 
-The handoff includes a story-led shot plan using each segment's visual direction, tone, energy, channel style, caption position, and edit history, plus subtitle timing and FCPXML. The pre-edit report confirms that requested source files exist. It does not mean every visual treatment is rendered: the FCPXML does not yet burn in the SRT, composite 2.5D layers, animate chart/map graphics, apply all planned transitions, mix selected music/SFX tracks, or export MP4. Those are remaining final-render features. The optional polish focus points in the handoff are not a required human approval gate.
+The command writes the story-led shot plan and FCPXML, then renders an MP4 locally. A long-form plan must be at least 20 minutes. A `short_form` plan must be 30 seconds and 9:16; render a separate timed job for the short script. English SRT captions are burned into the picture by default. The creative director may request evidence-backed charts, counters, schematic routes, optional coordinate maps, OCR document highlights, and layered portrait cutouts. Python checks chart/map/document data against the scene's verified claims before Pillow and FFmpeg render them. Routes are labelled not to scale; geographic maps note projection distortion. Technical QA blocks the final filename when checks fail. QA measures format, duration, streams, and edit-diversity proxies, but cannot determine whether a story is engaging or guarantee retention. The command never uploads.
 
 See [WALKTHROUGH.md](WALKTHROUGH.md) for the full production walkthrough, output list, and the current boundary between automated planning and final rendering.
 
@@ -280,3 +282,19 @@ From the repository folder:
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+## Optional evidence graphics: maps, documents, and 2.5D portraits
+
+Install only the add-ons you intend to use:
+
+```powershell
+pip install -r requirements-maps.txt
+pip install -r requirements-ocr.txt
+pip install -r requirements-portraits.txt
+```
+
+- **Geographic maps:** research records exact coordinates with direct source URLs. The independent verifier must confirm the same coordinates before the script may use them. Cartopy draws Natural Earth coastlines/borders; first use may download its boundary dataset. Frames identify projection distortion, so use verified chart/text for exact measurements.
+- **Document highlights:** install `requirements-ocr.txt` and the separate Tesseract OCR executable with English language data. A `document_highlight` spec supplies a claim-linked phrase; OCR must find its words in the selected image before Pillow marks the detected word boxes. A miss stops the render.
+- **2.5D portraits:** install `requirements-portraits.txt`. The timed job must set a portrait image as `parallax_foreground_asset_id` and a distinct picture as the shot's `asset_id` background plate. rembg extracts the transparent foreground; FFmpeg moves it separately over the provided background. rembg does not reconstruct the original scene behind a removed subject, so the original image cannot also be the backdrop. First use downloads model weights.
+
+These packages are optional. Install them in the project environment and confirm compatibility with the installed Python version. Tesseract is a separate executable, not a pip package. See the [Cartopy installation guide](https://cartopy.readthedocs.io/v0.26.0/installing.html), [Cartopy map feature guide](https://cartopy.readthedocs.io/latest/matplotlib/feature_interface.html), [pytesseract prerequisites](https://github.com/madmaze/pytesseract#installation), and [rembg usage and model notes](https://github.com/danielgatis/rembg).
