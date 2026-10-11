@@ -1,0 +1,2 @@
+# Optional article-headline screenshot capture; also install Chromium once.
+playwright>=1.45,<2

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 
+
 OPTIONAL_API_KEYS = {
     "YOUTUBE_API_KEY": "YouTube Data API (topic discovery; optional when a topic is supplied)",
     "PIXABAY_API_KEY": "Pixabay API (picture/video search and downloads)",
@@ -91,6 +92,24 @@ def configure_api_keys(
     """
     dirs = ensure_workspace(base_dir)
     secret_path = dirs["root"] / "secrets.json"
+    # Load the workspace .env in the same way the dependency checker does.
+    # Existing process variables and the JSON secrets file remain authoritative.
+    env_path = dirs["root"] / ".env"
+    if env_path.is_file():
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(env_path, override=False)
+        except ImportError:
+            # Keep secrets usable even in a partially installed environment;
+            # dependency_check.py will report python-dotenv as a missing package.
+            for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                name, value = line.split("=", 1)
+                value = value.strip().strip("\"'")
+                if name.strip() and value:
+                    os.environ.setdefault(name.strip(), value)
     secrets = _read_secret_file(secret_path)
     for name, value in secrets.items():
         if not name.startswith("_") and isinstance(value, str) and value.strip():

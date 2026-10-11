@@ -68,7 +68,7 @@ The extra no-key sources are **collection-specific archives**, not a universal G
 
 ## 1. Install and configure
 
-Use Python 3.10 or later. From the repository folder:
+Use Python 3.10 or later. From the repository folder, create and activate a virtual environment, then run the dependency installer/checker:
 
 ```bash
 python -m venv .venv
@@ -78,15 +78,27 @@ Windows PowerShell:
 
 ```powershell
 .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+python main_pipeline.py check-deps --install --base-dir "D:\YouTubeProduction"
 ```
 
 macOS/Linux:
 
 ```bash
 source .venv/bin/activate
-pip install -r requirements.txt
+python main_pipeline.py check-deps --install --base-dir ./production
 ```
+
+`check-deps` installs the core Python packages into the active environment, then checks Python, FFmpeg/ffprobe, workspace credentials, and stage requirements. Run it without `--install` for a read-only check. By default it checks the complete workflow (topic discovery, Azure narration, and editing); use `--stage edit` for a render-only machine, `--stage narration` for voice setup, or `--stage preproduction --topic-provided` when you will supply a topic instead of discovering one.
+
+Optional features are deliberately opt-in because some have large downloads or platform-specific setup:
+
+```bash
+python main_pipeline.py check-deps --install --features maps,ocr,portraits,news --base-dir ./production
+```
+
+Feature mapping: `maps` installs Matplotlib and Cartopy; `ocr` installs pytesseract and checks for the separate Tesseract OCR executable; `portraits` installs CPU rembg (model weights download the first time a cutout is generated); `news` installs Playwright and Chromium for article-headline screenshots. FFmpeg and Tesseract are system programs, so the checker prints platform-specific FFmpeg guidance and a separate Tesseract reminder when they are missing. Optional media API keys are warnings unless their specific feature requires them.
+
+The `--install` option uses the Python interpreter running the checker (`python -m pip`) and does not install system packages. On Windows, install FFmpeg separately and ensure both `ffmpeg.exe` and `ffprobe.exe` are on `PATH`. The workspace `.env` file is loaded by the pipeline; `secrets.json` and process environment variables are also supported. Do not commit either secret file.
 
 Create the local workspace and save your API keys once:
 

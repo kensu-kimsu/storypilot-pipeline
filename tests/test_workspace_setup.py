@@ -9,6 +9,15 @@ from workspace_setup import OPTIONAL_API_KEYS, configure_api_keys, ensure_worksp
 
 
 class WorkspaceSetupTests(unittest.TestCase):
+    def test_workspace_dotenv_is_loaded_before_required_key_check(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {}, clear=True):
+            base = Path(temp) / "production"
+            base.mkdir()
+            (base / ".env").write_text("OPENAI_API_KEY=local-test-key\n", encoding="utf-8")
+            status = configure_api_keys(base, interactive=False)
+            self.assertIn("OPENAI_API_KEY", status["configured"])
+            self.assertEqual(os.environ["OPENAI_API_KEY"], "local-test-key")
+
     def test_only_user_provided_api_keys_are_prompted(self):
         self.assertEqual(set(OPTIONAL_API_KEYS), {
             "YOUTUBE_API_KEY", "PIXABAY_API_KEY", "FREESOUND_API_KEY",

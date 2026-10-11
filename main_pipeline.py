@@ -32,6 +32,12 @@ def main() -> None:
     edit.add_argument("--encoder", choices=("auto", "cpu", "nvenc"), default="auto", help="FFmpeg video encoder (default: CPU; choose nvenc when supported)")
     setup = sub.add_parser("setup-apis", help="Create the workspace and configure API keys")
     setup.add_argument("--base-dir", type=Path, required=True, help="Production workspace and local secrets-file directory")
+    check = sub.add_parser("check-deps", help="Check or install Python packages, system tools, and stage credentials")
+    check.add_argument("--base-dir", type=Path, required=True, help="Production workspace containing secrets.json or .env")
+    check.add_argument("--stage", dest="check_stage", choices=("all", "preproduction", "narration", "edit"), default="all")
+    check.add_argument("--topic-provided", action="store_true", help="Skip the YouTube discovery key check")
+    check.add_argument("--install", action="store_true", help="Install core Python packages in the active environment")
+    check.add_argument("--features", default="", help="Optional packages: maps,ocr,portraits,news (or all)")
     args = parser.parse_args()
     if args.stage == "setup-apis":
         from workspace_setup import configure_api_keys
@@ -41,6 +47,17 @@ def main() -> None:
         print("Configured API keys: " + (", ".join(status["configured"]) or "none"))
         print("Key values are never displayed.")
         return
+    if args.stage == "check-deps":
+        from dependency_check import main as dependency_main
+        sys.argv = [sys.argv[0], "--base-dir", str(args.base_dir)]
+        sys.argv += ["--stage", args.check_stage]
+        if args.topic_provided:
+            sys.argv.append("--topic-provided")
+        if args.install:
+            sys.argv.append("--install")
+        if args.features:
+            sys.argv += ["--features", args.features]
+        raise SystemExit(dependency_main())
     if args.stage == "preproduction":
         from prepost_pipeline import main as preproduction_main
         sys.argv = [sys.argv[0], "--channels", str(args.channels), "--base-dir", str(args.base_dir)]
