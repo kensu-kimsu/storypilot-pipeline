@@ -64,7 +64,7 @@ The brand is the recurring visual anchor. The episode palette responds to the to
 
 ## 4. Create narration and timed captions
 
-Synthesize narration using Azure Speech or your configured local Fish Speech endpoint:
+Synthesize narration using Azure Speech, Fish Speech, or the local Chatterbox bridge selected in `.env`:
 
 ```powershell
 python azure_tts.py `
@@ -74,7 +74,7 @@ python azure_tts.py `
   --assets-manifest "D:\YouTubeProduction\jobs\job-name\selected_assets.json"
 ```
 
-The step uses chunk emotion and delivery cues to guide TTS. It writes narration audio, a manifest, word timings, captions, and `timed_edit_job.json`. Check the narration duration and caption alignment before editing. Fish Speech word timings are approximate in the current integration.
+The step uses chunk emotion and delivery cues to guide TTS. It writes narration audio, a manifest, word timings, captions, and `timed_edit_job.json`. Check narration duration and caption alignment before editing. Local Fish and Chatterbox word timings are approximate in the current integration. See README's Chatterbox setup section to install and start its local bridge.
 
 The long-form script targets at least 20 minutes. The preproduction stage also writes a standalone 30-second Shorts script. Create timed narration jobs for each format you want rendered; a `short_form` job must have a 30-second narration and a 9:16 canvas.
 
@@ -115,7 +115,7 @@ QA checks container/streams, planned duration, minimum length (20 minutes for lo
 | Requested result | Current status |
 |---|---|
 | Verified research and story-specific narration | Prepared in the job folder |
-| Expressive English narration and timed captions | Prepared through Azure or Fish Speech |
+| Expressive English narration and timed captions | Prepared through Azure, Fish Speech, or Chatterbox |
 | Downloaded/reused visual and audio assets | Attempted from configured sources; unresolved items are reported |
 | Channel-branded, story-led shot plan | Written to timeline JSON, notes, and FCPXML handoff |
 | 20-minute final MP4 | Rendered from a long-form timed job after QA passes |

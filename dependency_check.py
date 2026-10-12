@@ -183,7 +183,7 @@ def _check(args: argparse.Namespace) -> tuple[list[tuple[str, bool, str]], list[
 
     if args.stage in {"all", "narration"}:
         provider = str(os.environ.get("NARRATION_PROVIDER") or secrets.get("NARRATION_PROVIDER") or env_file.get("NARRATION_PROVIDER") or "azure").strip().lower()
-        findings.append(("Narration provider", provider in {"azure", "fish"}, provider or "unset (defaults to azure)"))
+        findings.append(("Narration provider", provider in {"azure", "fish", "chatterbox"}, provider or "unset (defaults to azure)"))
         if provider == "azure":
             for key in ("AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"):
                 ok = _configured(key, secrets, env_file)
@@ -192,8 +192,12 @@ def _check(args: argparse.Namespace) -> tuple[list[tuple[str, bool, str]], list[
             url = str(os.environ.get("FISH_SPEECH_URL") or secrets.get("FISH_SPEECH_URL") or env_file.get("FISH_SPEECH_URL") or "http://127.0.0.1:8080").strip()
             ok = _fish_server_ok(url)
             findings.append(("Local Fish Speech server", ok, f"healthy at {url}" if ok else f"no healthy /v1/health at {url}"))
+        elif provider == "chatterbox":
+            url = str(os.environ.get("CHATTERBOX_URL") or secrets.get("CHATTERBOX_URL") or env_file.get("CHATTERBOX_URL") or "http://127.0.0.1:8090").strip()
+            ok = _fish_server_ok(url)
+            findings.append(("Local Chatterbox server", ok, f"healthy at {url}" if ok else f"no healthy /v1/health at {url}"))
         else:
-            guidance.append("Set NARRATION_PROVIDER to azure or fish.")
+            guidance.append("Set NARRATION_PROVIDER to azure, fish, or chatterbox.")
 
     # Directories are created by the normal setup command; check write access without creating files.
     if args.stage in {"all", "edit"}:

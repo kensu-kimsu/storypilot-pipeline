@@ -11,6 +11,7 @@ import wave
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from azure_tts import (
     _estimated_word_boundaries,
+    _synthesize_chatterbox_chunk,
     _synthesize_fish_chunk,
     build_ssml,
     build_timed_edit_job,
@@ -19,9 +20,98 @@ from azure_tts import (
     synthesize_script,
     words_to_srt,
 )
+from chatterbox_server import direction_parameters
+import chatterbox_server
 
 
 class AzureTtsTests(unittest.TestCase):
+    def test_chatterbox_direction_maps_to_bounded_delivery_controls(self):
+        dramatic = direction_parameters("fearful", "suspense", "slow", 0.9)
+        neutral = direction_parameters("neutral", "standard", "measured", 0.5)
+        self.assertGreater(dramatic[0], neutral[0])
+        self.assertLessEqual(dramatic[0], 0.85)
+        self.assertLess(dramatic[1], neutral[1])
+
+    def test_chatterbox_client_posts_delivery_direction_and_returns_wav(self):
+        fake_response = Mock(ok=True, content=b"RIFF" + b"audio")
+        fake_requests = SimpleNamespace(RequestException=Exception, post=Mock(return_value=fake_response))
+        with patch.dict(sys.modules, {"requests": fake_requests}):
+            result = _synthesize_chatterbox_chunk(
+                "The secret changed everything.", base_url="http://127.0.0.1:8090",
+                emotion="fearful", tone="suspense", pace="slow", intensity=0.8,
+            )
+        self.assertTrue(result.startswith(b"RIFF"))
+        call = fake_requests.post.call_args
+        self.assertEqual(call.args[0], "http://127.0.0.1:8090/v1/tts")
+        self.assertEqual(call.kwargs["json"]["emotion"], "fearful")
+        self.assertEqual(call.kwargs["json"]["pace"], "slow")
+        self.assertEqual(call.kwargs["json"]["intensity"], 0.8)
+
+    def test_chatterbox_bridge_tts_http_contract(self):
+        class DummyAudio:
+            def detach(self):
+                return self
+            def cpu(self):
+                return self
+
+        class DummyModel:
+            sr = 24000
+            def generate(self, text, **kwargs):
+                self.last_call = (text, kwargs)
+                return DummyAudio()
+
+        class DummyTorchAudio:
+            @staticmethod
+            def save(fileobj, _audio, sample_rate, format):
+                with wave.open(fileobj, "wb") as wav:
+                    wav.setnchannels(1)
+                    wav.setsampwidth(2)
+                    wav.setframerate(sample_rate)
+                    wav.writeframes(b"\0\0" * 100)
+
+        class FakeHandler:
+            path = "/v1/tts"
+            headers = {"Content-Length": "0"}
+            def __init__(self):
+                self.rfile = io.BytesIO()
+                self.wfile = io.BytesIO()
+                self.status = None
+                self.response_headers = {}
+            def send_response(self, status):
+                self.status = status
+            def send_header(self, name, value):
+                self.response_headers[name] = value
+            def end_headers(self):
+                pass
+            def _json(self, status, data):
+                self.send_response(status)
+                self.wfile.write(json.dumps(data).encode("utf-8"))
+
+        old = chatterbox_server.MODEL, chatterbox_server.TORCHAUDIO, chatterbox_server.REFERENCE_AUDIO
+        model = DummyModel()
+        chatterbox_server.MODEL = model
+        chatterbox_server.TORCHAUDIO = DummyTorchAudio
+        chatterbox_server.REFERENCE_AUDIO = None
+        try:
+            request_data = json.dumps({
+                "text": "The secret changed everything.", "emotion": "fearful", "tone": "suspense",
+                "pace": "slow", "intensity": 0.8,
+            }).encode("utf-8")
+            fake = FakeHandler()
+            fake.headers = {"Content-Length": str(len(request_data))}
+            fake.rfile = io.BytesIO(request_data)
+            chatterbox_server.ChatterboxHandler.do_POST(fake)
+            self.assertEqual(fake.status, 200)
+            self.assertTrue(fake.wfile.getvalue().startswith(b"RIFF"))
+            self.assertEqual(model.last_call[0], "The secret changed everything.")
+            self.assertGreater(model.last_call[1]["exaggeration"], 0.6)
+            health = FakeHandler()
+            health.path = "/v1/health"
+            chatterbox_server.ChatterboxHandler.do_GET(health)
+            self.assertEqual(json.loads(health.wfile.getvalue())["provider"], "chatterbox")
+        finally:
+            chatterbox_server.MODEL, chatterbox_server.TORCHAUDIO, chatterbox_server.REFERENCE_AUDIO = old
+
     def test_emotion_tags_map_to_supported_expressive_styles(self):
         self.assertEqual(emotion_to_style("fearful curiosity"), "fearful")
         self.assertEqual(emotion_to_style("intrigued", "dramatic_realization"), "hopeful")
@@ -88,6 +178,28 @@ class AzureTtsTests(unittest.TestCase):
                     "azure_tts._synthesize_fish_chunk", return_value=audio_io.getvalue()):
                 manifest = synthesize_script(script_path, root / "out", provider="fish")
             self.assertEqual(manifest["provider"], "fish")
+            self.assertEqual(manifest["word_timing_quality"], "approximate")
+            self.assertTrue(Path(manifest["audio_file"]).is_file())
+            self.assertIn("A documented fact.", Path(manifest["caption_file"]).read_text(encoding="utf-8"))
+
+    def test_chatterbox_synthesis_writes_approximate_caption_manifest(self):
+        audio_io = io.BytesIO()
+        with wave.open(audio_io, "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(24000)
+            output.writeframes(b"\0\0" * 24000)
+        script = {"narration_chunks": [{"text": "A documented fact.", "delivery_emotion": "curious",
+                                        "vocal_intensity": 0.7, "delivery_pace": "measured"}]}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            script_path = root / "script.json"
+            script_path.write_text(json.dumps(script), encoding="utf-8")
+            fake_requests = SimpleNamespace(get=Mock(return_value=Mock(ok=True)))
+            with patch.dict(sys.modules, {"requests": fake_requests}), patch(
+                    "azure_tts._synthesize_chatterbox_chunk", return_value=audio_io.getvalue()):
+                manifest = synthesize_script(script_path, root / "out", provider="chatterbox")
+            self.assertEqual(manifest["provider"], "chatterbox")
             self.assertEqual(manifest["word_timing_quality"], "approximate")
             self.assertTrue(Path(manifest["audio_file"]).is_file())
             self.assertIn("A documented fact.", Path(manifest["caption_file"]).read_text(encoding="utf-8"))

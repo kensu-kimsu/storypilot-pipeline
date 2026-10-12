@@ -44,6 +44,15 @@ class DependencyCheckTests(unittest.TestCase):
             dependency_check._configure_credentials(args)
         configure.assert_not_called()
 
+    def test_chatterbox_narration_does_not_request_azure_keys(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {}, clear=True):
+            base = Path(temp)
+            (base / ".env").write_text("NARRATION_PROVIDER=chatterbox\n", encoding="utf-8")
+            args = type("Args", (), {"stage": "narration", "topic_provided": True, "base_dir": base})()
+            with patch("workspace_setup.configure_api_keys") as configure:
+                dependency_check._configure_credentials(args)
+            self.assertEqual(configure.call_args.kwargs["required_keys"], ())
+
 
 if __name__ == "__main__":
     unittest.main()

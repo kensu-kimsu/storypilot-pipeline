@@ -1,6 +1,6 @@
 """Narration synthesis, caption timing, and edit-job assembly.
 
-Azure Speech and the optional local Fish Speech server are supported.
+Azure Speech, Fish Speech, and local Chatterbox are supported.
 """
 from __future__ import annotations
 
@@ -211,6 +211,35 @@ def _synthesize_fish_chunk(text: str, *, base_url: str, reference_id: str = "",
     return response.content
 
 
+def _synthesize_chatterbox_chunk(text: str, *, base_url: str, emotion: str,
+                                 tone: str, pace: str, intensity: float) -> bytes:
+    """Call the local StoryPilot Chatterbox bridge and return its WAV response."""
+    try:
+        import requests
+    except ImportError as exc:  # pragma: no cover - requests is a project dependency
+        raise RuntimeError("Install StoryPilot dependencies with: pip install -r requirements.txt") from exc
+    payload = {
+        "text": text,
+        "emotion": emotion,
+        "tone": tone,
+        "pace": pace,
+        "intensity": max(0.0, min(1.0, float(intensity))),
+    }
+    url = f"{base_url.rstrip('/')}/v1/tts"
+    try:
+        response = requests.post(url, json=payload, timeout=(10, 1800))
+    except requests.RequestException as exc:
+        raise RuntimeError(
+            f"Cannot reach local Chatterbox at {url}. Start chatterbox_server.py and check /v1/health."
+        ) from exc
+    if not response.ok:
+        details = response.text[:1000] if response.text else "empty response"
+        raise RuntimeError(f"Chatterbox returned HTTP {response.status_code}: {details}")
+    if not response.content.startswith(b"RIFF"):
+        raise RuntimeError("Chatterbox did not return a WAV file; check the local server logs.")
+    return response.content
+
+
 def _estimated_word_boundaries(text: str, duration: float) -> list[dict[str, Any]]:
     """Estimate caption word times when the local TTS server has no alignments."""
     tokens = re.findall(r"\S+", text)
@@ -239,16 +268,17 @@ def synthesize_script(script_path: Path, output_dir: Path, *, voice: str | None 
     if not chunks:
         raise ValueError("script.json has no narration_chunks")
     chosen_provider = (provider or os.getenv("NARRATION_PROVIDER") or "azure").strip().lower()
-    if chosen_provider not in {"azure", "fish"}:
-        raise ValueError("Narration provider must be 'azure' or 'fish'")
+    if chosen_provider not in {"azure", "fish", "chatterbox"}:
+        raise ValueError("Narration provider must be 'azure', 'fish', or 'chatterbox'")
     fish_base_url = fish_url or os.getenv("FISH_SPEECH_URL", "http://127.0.0.1:8080").strip()
+    chatterbox_base_url = os.getenv("CHATTERBOX_URL", "http://127.0.0.1:8090").strip()
     if chosen_provider == "azure":
         chosen_voice = voice or os.getenv("AZURE_TTS_VOICE") or payload.get("voice_name") or DEFAULT_EXPRESSIVE_VOICE
         chosen_region = region or os.getenv("AZURE_SPEECH_REGION", "").strip()
         if not chosen_region:
             raise RuntimeError("AZURE_SPEECH_REGION is required for Azure narration")
         fish_reference_id = ""
-    else:
+    elif chosen_provider == "fish":
         chosen_voice = voice or os.getenv("FISH_SPEECH_REFERENCE_ID", "").strip() or "Fish Speech S2 Pro default voice"
         chosen_region = "local"
         fish_reference_id = "" if chosen_voice == "Fish Speech S2 Pro default voice" else chosen_voice
@@ -272,6 +302,17 @@ def synthesize_script(script_path: Path, output_dir: Path, *, voice: str | None 
             raise RuntimeError(
                 f"Local Fish Speech is not ready at {fish_base_url}. Start the server and verify /v1/health."
             ) from exc
+    else:
+        chosen_voice = "Chatterbox reference voice"
+        chosen_region = "local"
+        try:
+            import requests
+            health = requests.get(f"{chatterbox_base_url.rstrip('/')}/v1/health", timeout=5)
+            health.raise_for_status()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Local Chatterbox is not ready at {chatterbox_base_url}. Start chatterbox_server.py and verify /v1/health."
+            ) from exc
 
     output_dir.mkdir(parents=True, exist_ok=True)
     audio_path = output_dir / "narration.wav"
@@ -291,12 +332,19 @@ def synthesize_script(script_path: Path, output_dir: Path, *, voice: str | None 
                 text, voice=chosen_voice, region=chosen_region, emotion=emotion,
                 tone=tone, pace=str(chunk.get("delivery_pace", "measured")),
             )
-        else:
+        elif chosen_provider == "fish":
             raw = _synthesize_fish_chunk(
                 text, base_url=fish_base_url, reference_id=fish_reference_id,
                 reference_audio=fish_reference_audio,
                 reference_text=fish_reference_text,
                 emotion=emotion, tone=tone,
+            )
+            chunk_words = []
+        else:
+            raw = _synthesize_chatterbox_chunk(
+                text, base_url=chatterbox_base_url, emotion=emotion, tone=tone,
+                pace=str(chunk.get("delivery_pace", "measured")),
+                intensity=float(chunk.get("vocal_intensity", chunk.get("intensity", 0.5)) or 0.5),
             )
             chunk_words = []
         import io
@@ -305,10 +353,10 @@ def synthesize_script(script_path: Path, output_dir: Path, *, voice: str | None 
             if params is None:
                 params = current
             if current != params:
-                raise RuntimeError("Azure returned inconsistent WAV formats between narration chunks")
+                raise RuntimeError(f"{chosen_provider} returned inconsistent WAV formats between narration chunks")
             frames = wav.readframes(wav.getnframes())
             chunk_duration = len(frames) / (wav.getframerate() * wav.getnchannels() * wav.getsampwidth())
-        if chosen_provider == "fish":
+        if chosen_provider in {"fish", "chatterbox"}:
             chunk_words = _estimated_word_boundaries(text, chunk_duration)
         frame_groups.append(frames)
         for word in chunk_words:
@@ -344,11 +392,11 @@ def synthesize_script(script_path: Path, output_dir: Path, *, voice: str | None 
     words_path = output_dir / "word_timestamps.json"
     words_path.write_text(json.dumps(words, indent=2, ensure_ascii=False), encoding="utf-8")
     manifest = {"provider": chosen_provider, "voice": chosen_voice, "region": chosen_region,
-                "word_timing_quality": "approximate" if chosen_provider == "fish" else "provider_word_boundaries",
+                "word_timing_quality": "approximate" if chosen_provider in {"fish", "chatterbox"} else "provider_word_boundaries",
                 "audio_file": str(audio_path.resolve()),
                 "duration_seconds": round(elapsed, 3), "caption_file": str(srt_path.resolve()),
                 "word_timestamps_file": str(words_path.resolve()), "chunks": offsets,
-                "emotion_style_enabled": chosen_provider == "fish" or ":MAI-Voice-2.1" in chosen_voice}
+                "emotion_style_enabled": chosen_provider in {"fish", "chatterbox"} or ":MAI-Voice-2.1" in chosen_voice}
     (output_dir / "narration_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return manifest
 
@@ -474,14 +522,14 @@ def build_timed_edit_job(script_path: Path, narration: dict, assets_manifest_pat
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Synthesize expressive English documentary narration and captions with Azure Speech")
+    parser = argparse.ArgumentParser(description="Synthesize expressive documentary narration and captions")
     parser.add_argument("script_json", type=Path)
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--base-dir", type=Path, required=True, help="Workspace containing secrets.json")
     parser.add_argument("--assets-manifest", type=Path, help="selected_assets.json from preproduction asset acquisition")
-    parser.add_argument("--voice", help="Azure voice name, or a local Fish Speech reference_id")
+    parser.add_argument("--voice", help="Azure voice name or a local Fish reference_id")
     parser.add_argument("--region", help="Azure Speech resource region; defaults to AZURE_SPEECH_REGION")
-    parser.add_argument("--provider", choices=("azure", "fish"), help="Narration provider; defaults to NARRATION_PROVIDER or azure")
+    parser.add_argument("--provider", choices=("azure", "fish", "chatterbox"), help="Narration provider; defaults to NARRATION_PROVIDER or azure")
     parser.add_argument("--fish-url", help="Local Fish Speech server base URL; defaults to FISH_SPEECH_URL or http://127.0.0.1:8080")
     args = parser.parse_args()
     try:
@@ -494,11 +542,11 @@ def main() -> None:
     if provider == "azure":
         required = ("AZURE_SPEECH_KEY",) if args.region else ("AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION")
         configure_api_keys(args.base_dir, required_keys=required)
-    elif provider == "fish":
+    elif provider in {"fish", "chatterbox"}:
         from workspace_setup import ensure_workspace
         ensure_workspace(args.base_dir)
     else:
-        parser.error("--provider must be azure or fish")
+        parser.error("--provider must be azure, fish, or chatterbox")
     result = synthesize_script(args.script_json, args.out_dir, voice=args.voice, region=args.region,
                                provider=provider, fish_url=args.fish_url)
     edit_job = build_timed_edit_job(args.script_json, result, args.assets_manifest)

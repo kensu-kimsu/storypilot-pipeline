@@ -4,7 +4,7 @@ StoryPilot is a Python-assisted production workflow for fact-led YouTube documen
 
 ## Current implementation boundary
 
-This repository automates **pre-production, Azure or local Fish Speech narration/caption preparation, media acquisition, story-led editing, and local MP4 rendering**. The `edit` command checks asset readiness, retries missing manifest assets through configured sources, writes `edit_readiness.json`, and blocks if required files remain missing. It renders an MP4, runs technical QA, and saves a QA report. It does not upload to YouTube or start/read YouTube's native thumbnail experiment.
+This repository automates **pre-production, Azure or local Fish Speech/Chatterbox narration and caption preparation, media acquisition, story-led editing, and local MP4 rendering**. The `edit` command checks asset readiness, retries missing manifest assets through configured sources, writes `edit_readiness.json`, and blocks if required files remain missing. It renders an MP4, runs technical QA, and saves a QA report. It does not upload to YouTube or start/read YouTube's native thumbnail experiment.
 
 ## Story-led variable editing
 
@@ -173,7 +173,7 @@ That discovery mode needs `YOUTUBE_API_KEY`. YouTube's public counters do not pr
 | Independent fact check | A second OpenAI web-search pass checks each claim against cited and corroborating sources. Only verified or explicitly qualified claims with source URLs are passed to script writing; if none pass, script generation stops. | `research.json` includes `verification_summary`, checked sources, and `verified_claims`. |
 | News headline screenshots (only when requested by the creative brief) | Searches approved major news publishers, captures only the visible article headline, and highlights matching topic terms in yellow. If no scene requests one, it performs no additional news article search. | `assets/screenshots/<job-name>/*.png` and `article_screenshots.json`. |
 | Script and visual direction | Writes long-form narration chunks with claim IDs, tone/energy, a story-specific visual mode, evidence to show, and rationale, plus a complete short-form script. | `script.json`. The word-count estimate is only a duration proxy; measure actual narration time before editing. |
-| Narration preparation | Synthesizes each chunk with Azure Speech or a local Fish Speech S2 server, applies delivery direction, and creates English captions. | `narration.wav`, `narration_manifest.json`, `word_timestamps.json`, `captions.srt`, and `timed_edit_job.json`. Azure supplies word boundaries; Fish local currently uses approximate word timing. |
+| Narration preparation | Synthesizes each chunk with Azure Speech, local Fish Speech S2, or the local Chatterbox bridge, applies delivery direction, and creates English captions. | `narration.wav`, `narration_manifest.json`, `word_timestamps.json`, `captions.srt`, and `timed_edit_job.json`. Azure supplies word boundaries; local providers use approximate word timing. |
 | Niche creative direction | Loads the matching entry from `niche_prompts.json` for source priorities, story framing, retention beats, and narration delivery. | Five starter profiles: cybersecurity, finance, business, dark history, and future technology. |
 | Asset planning | Converts each scene's visual, music, and SFX needs into provider search requests. Video requests carry the five-second maximum. | `asset_requests.json`, including query, scene, purpose, and candidate-source list. |
 | Asset discovery (`--discover-assets`) | Searches no-key Commons, Internet Archive, Library of Congress, and NASA collections. It adds source candidates and links to the manifest. | `asset_requests.json` updated with `candidates`. |
@@ -184,7 +184,7 @@ That discovery mode needs `YOUTUBE_API_KEY`. YouTube's public counters do not pr
 
 Each job is written to `jobs/<channel-topic>/`. Typical files are `research.json`, `script.json`, `asset_requests.json`, `selected_assets.json` (when acquisition is run), `metadata_ab_test.json`, optional thumbnail PNGs, and `job.json`.
 
-`niche_prompts.json` is the project's editable creative-direction file. Add a profile whose key matches the channel's `niche`; it can define `research_prompt`, `system_prompt`, `retention_guidance`, `narration_direction`, `voice_name`, and `default_search_fallback`. The script prompts for a truthful opening, new evidence or stakes through the story, meaningful re-hooks, and a resolved ending. Each narration chunk has tone, emotion, pace, intensity, and pause guidance. `azure_tts.py` turns those cues into speech and outputs word timings and `captions.srt`. The default is `en-US-Ethan:MAI-Voice-2.1`; pass `--voice en-US-Olivia:MAI-Voice-2.1` to audition the female English voice. Both MAI voices support expressive emotion styles; the selected locale is English (United States). A channel-level `voice_name` controls the voice written into the script; `--voice` overrides it at synthesis time.
+`niche_prompts.json` is the project's editable creative-direction file. Add a profile whose key matches the channel's `niche`; it can define `research_prompt`, `system_prompt`, `retention_guidance`, `narration_direction`, `voice_name`, and `default_search_fallback`. The script prompts for a truthful opening, new evidence or stakes through the story, meaningful re-hooks, and a resolved ending. Each narration chunk has tone, emotion, pace, intensity, and pause guidance. `azure_tts.py` turns those cues into speech and outputs word timings and `captions.srt`. Azure MAI remains the default unless `NARRATION_PROVIDER` is changed. Local providers estimate word timings, so inspect captions before editing.
 
 For MAI Voice 2.1, create a Speech resource in a supported region. Copy `.env.example` to your production workspace as `.env`, set `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION`, or enter them when prompted; keep real credentials out of Git. `AZURE_TTS_VOICE` can be used in `.env` to try another voice.
 
@@ -213,7 +213,7 @@ The command writes the story-led shot plan and FCPXML, then renders an MP4 local
 
 See [WALKTHROUGH.md](WALKTHROUGH.md) for the full production walkthrough, output list, and the current boundary between automated planning and final rendering.
 
-### Narration with Azure Speech or local Fish Speech
+### Narration with Azure Speech, Fish Speech, or Chatterbox
 
 Run pre-production with asset acquisition, then synthesize the script and create a timed edit job:
 
@@ -223,7 +223,89 @@ python azure_tts.py "D:\\YouTubeProduction\\jobs\\job-name\\script.json" --out-d
 python main_pipeline.py edit "D:\\YouTubeProduction\\jobs\\job-name\\timed_edit_job.json" --out "D:\\YouTubeProduction\\jobs\\job-name\\edit_handoff"
 ```
 
-For Azure Speech, use the existing voice defaults and set your Speech key and region in the workspace `secrets.json` or `.env`. For local Fish Speech, run its model server separately; keep it in a dedicated WSL/Linux or Docker environment so its large PyTorch/CUDA dependencies do not conflict with StoryPilot.
+For Azure Speech, use the existing voice defaults and set your Speech key and region in the workspace `secrets.json` or `.env`. For local Fish Speech or Chatterbox, run the model server separately; keep it in a dedicated WSL/Linux environment so its PyTorch/CUDA dependencies do not conflict with StoryPilot.
+
+#### Local Chatterbox setup on Windows
+
+StoryPilot's Chatterbox provider uses the official English `ChatterboxTTS` model through the small `chatterbox_server.py` bridge included in this repository. The bridge stays on `127.0.0.1:8090`; StoryPilot calls it for each narration chunk. No TTS API key or per-character fee is needed. The upstream project documents Python 3.11 and `pip install chatterbox-tts`; it uses a consented reference WAV for voice prompting. Its expressive controls adjust emphasis and cadence, but do not guarantee exact emotion acting. Chatterbox adds an inaudible watermark to generated audio. See the [official Chatterbox repository](https://github.com/resemble-ai/chatterbox).
+
+1. In **PowerShell as Administrator**, install WSL2 Ubuntu if it is not already installed, then restart if prompted:
+
+   ```powershell
+   wsl --install -d Ubuntu-24.04
+   ```
+
+2. Open Ubuntu from the Start menu, create its Linux username/password, and check that WSL can see your NVIDIA GPU:
+
+   ```bash
+   nvidia-smi
+   ```
+
+   If this command fails, update the Windows NVIDIA driver and confirm WSL GPU support before continuing. StoryPilot has a separate Windows Python environment; do not install Chatterbox into that environment.
+
+3. In Ubuntu, install Miniforge and create a dedicated Python 3.11 environment:
+
+   ```bash
+   sudo apt update
+   sudo apt install -y git curl ffmpeg
+   curl -L -o Miniforge3.sh https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+   bash Miniforge3.sh
+   ```
+
+   Follow the installer prompts, close/reopen Ubuntu, then run:
+
+   ```bash
+   conda create -n chatterbox python=3.11 -y
+   conda activate chatterbox
+   pip install chatterbox-tts
+   python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU only')"
+   ```
+
+   Continue with `--device cuda` only if the last command prints `CUDA available: True`. If it reports `False`, check the current [PyTorch install selector](https://pytorch.org/get-started/locally/) for the matching Linux CUDA wheel, install it in this `chatterbox` environment, and run the check again. CPU mode can test the connection, but will take longer to synthesize long narration.
+
+4. Record a clean 5–10 second WAV sample for the narrator. Use your own voice or a voice you have permission to use. Save it under `D:\YouTubeProduction\assets\narrator_reference.wav`. WSL sees that file at `/mnt/d/YouTubeProduction/assets/narrator_reference.wav`.
+
+5. In Ubuntu, start StoryPilot's local Chatterbox bridge from the cloned project directory. It loads the model on first start, which can take a while and download model weights:
+
+   ```bash
+   cd /mnt/d/YouTubeProduction/storypilot-pipeline
+   conda activate chatterbox
+   python chatterbox_server.py --device cuda --reference-audio /mnt/d/YouTubeProduction/assets/narrator_reference.wav
+   ```
+
+   Leave this terminal open. The server binds only to localhost and has no authentication, so do not change `--host` to `0.0.0.0` on a networked machine.
+
+6. In a new Windows PowerShell window, check the service:
+
+   ```powershell
+   Invoke-RestMethod http://127.0.0.1:8090/v1/health
+   ```
+
+   The response should show `status: ok`, `provider: chatterbox`, and `device: cuda`. If Windows cannot reach the WSL service through localhost, check that WSL's localhost forwarding is enabled before changing the bind address.
+
+7. Edit `D:\YouTubeProduction\.env` and preserve your other settings. Set:
+
+   ```dotenv
+   NARRATION_PROVIDER=chatterbox
+   CHATTERBOX_URL=http://127.0.0.1:8090
+   ```
+
+   No Azure Speech key or region is required for narration when Chatterbox is selected. Run the StoryPilot health check from PowerShell:
+
+   ```powershell
+   cd D:\YouTubeProduction\storypilot-pipeline
+   python main_pipeline.py check-deps --stage narration --base-dir D:\YouTubeProduction
+   ```
+
+8. Generate a narration test from a prepared job. Replace `job-name` with the real job folder:
+
+   ```powershell
+   python azure_tts.py "D:\YouTubeProduction\jobs\job-name\script.json" --out-dir "D:\YouTubeProduction\jobs\job-name" --base-dir "D:\YouTubeProduction" --assets-manifest "D:\YouTubeProduction\jobs\job-name\selected_assets.json" --provider chatterbox
+   ```
+
+   This writes `narration.wav`, `captions.srt`, `word_timestamps.json`, `narration_manifest.json`, and `timed_edit_job.json`. Chatterbox does not return word alignments, so caption timing is estimated; listen to the audio and inspect the captions before rendering. The bridge maps each chunk's `delivery_emotion`, `tone`, `delivery_pace`, and `vocal_intensity` to Chatterbox's exaggeration and CFG controls. Pace is approximate; listen to the first test and tune the mapping in `chatterbox_server.py` if needed.
+
+To stop the local model, press **Ctrl+C** in its Ubuntu terminal. Start it again before the next narration run.
 
 #### Local Fish Speech setup on Windows
 

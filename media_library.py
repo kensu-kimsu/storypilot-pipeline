@@ -14,9 +14,10 @@ import re
 import sqlite3
 import shutil
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import quote, urlparse
 
 try:
@@ -48,6 +49,17 @@ def _is_cc0_license(value: str | None) -> bool:
     return (value or "").strip().lower() in {"creative commons 0", "cc0", "cc-zero"}
 
 
+@contextmanager
+def _database(path: Path) -> Iterator[sqlite3.Connection]:
+    """Commit or roll back a catalog transaction, then always close SQLite."""
+    conn = sqlite3.connect(path)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
 class MediaLibrary:
     def __init__(self, root: Path):
         self.root = root
@@ -61,7 +73,7 @@ class MediaLibrary:
         self.public_cache.mkdir(parents=True, exist_ok=True)
         self.pixabay_searches_this_run = 0
         self.public_searches_this_run = 0
-        with sqlite3.connect(self.db) as conn:
+        with _database(self.db) as conn:
             conn.execute("""CREATE TABLE IF NOT EXISTS assets (
                 asset_id TEXT PRIMARY KEY, sha256 TEXT UNIQUE NOT NULL, category TEXT NOT NULL,
                 path TEXT NOT NULL, title TEXT NOT NULL, tags TEXT NOT NULL, source TEXT NOT NULL,
@@ -75,7 +87,7 @@ class MediaLibrary:
         if category not in FOLDERS:
             raise ValueError(f"Unknown category: {category}")
         digest = hashlib.sha256(data).hexdigest()
-        with sqlite3.connect(self.db) as conn:
+        with _database(self.db) as conn:
             row = conn.execute("SELECT asset_id,path,source,source_url,license,creator,category FROM assets WHERE sha256=?", (digest,)).fetchone()
             if row:
                 return {"asset_id": row[0], "path": row[1], "source": row[2], "source_url": row[3],
@@ -93,7 +105,7 @@ class MediaLibrary:
             "creator": creator, "duration": duration,
             "created_at": datetime.now(timezone.utc).isoformat(), "metadata": details,
         }
-        with sqlite3.connect(self.db) as conn:
+        with _database(self.db) as conn:
             conn.execute("INSERT OR IGNORE INTO assets VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", (
                 record["asset_id"], record["sha256"], category, record["path"], title,
                 json.dumps(record["tags"]), source, source_url, license_name, creator, duration,
@@ -108,7 +120,7 @@ class MediaLibrary:
         terms = set(re.findall(r"[a-z0-9]+", query.lower()))
         if not terms:
             return []
-        with sqlite3.connect(self.db) as conn:
+        with _database(self.db) as conn:
             rows = conn.execute("SELECT asset_id,category,path,title,tags,source,source_url,license,creator,duration,metadata_json FROM assets").fetchall()
         scored = []
         for row in rows:
