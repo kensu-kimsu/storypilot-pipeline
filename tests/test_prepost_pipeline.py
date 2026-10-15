@@ -219,6 +219,7 @@ class PrePostPipelineTests(unittest.TestCase):
         self.assertIn("Choose it because it expresses the verified evidence", captured["prompt"])
         self.assertIn("Montserrat", captured["prompt"])
         self.assertIn("English", captured["prompt"])
+        self.assertIn("generated_media_required", captured["prompt"])
         self.assertEqual(result["voice_name"], "en-US-Ethan:MAI-Voice-2.1")
         self.assertEqual(result["visual_brand"], channel["visual_brand"])
         self.assertFalse(result["narration_audio_generated"])
@@ -305,6 +306,20 @@ class PrePostPipelineTests(unittest.TestCase):
             self.assertEqual(request["status"], "awaiting_search")
             self.assertEqual(request["highlight_keywords"], ["scandal", "company"])
 
+
+    def test_generated_image_permission_applies_only_to_parallax_background(self):
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = asset_research({"narration_chunks": [{
+                "visual_mode": "parallax_portrait",
+                "parallax_assets": {
+                    "portrait_query": "recognizable founder portrait",
+                    "background_query": "abstract illustrated office",
+                    "generated_media_required": True,
+                },
+            }]}, Path(temp))
+            requests_by_role = {row["parallax_role"]: row for row in manifest["assets"]}
+            self.assertFalse(requests_by_role["portrait_foreground"]["generated_media_required"])
+            self.assertTrue(requests_by_role["parallax_background"]["generated_media_required"])
 
 if __name__ == "__main__":
     unittest.main()
