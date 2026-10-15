@@ -22,6 +22,8 @@ except ImportError:  # pragma: no cover - reported by dependency checker
     requests = None
 
 
+from cost_controls import record_openai_usage, resolve_model
+
 VIDEO_SUFFIXES = {".mp4", ".webm", ".mkv", ".mov", ".ogv", ".mpeg", ".mpg"}
 
 
@@ -127,10 +129,11 @@ def search_tiktok_videos(query: str, *, limit: int = 3) -> list[dict]:
     )
     response = req.post("https://api.openai.com/v1/responses", headers={
         "Authorization": f"Bearer {key}", "Content-Type": "application/json",
-    }, json={"model": os.getenv("OPENAI_MODEL", "gpt-5"), "input": prompt,
+    }, json={"model": resolve_model("social_search"), "input": prompt,
              "tools": [{"type": "web_search"}]}, timeout=120)
     response.raise_for_status()
     payload = response.json()
+    record_openai_usage(payload, stage="social_search", model=resolve_model("social_search"), web_search=True)
     candidates = _extract_tiktok_urls(payload, limit)
     # Preserve model-supplied descriptions where their URL matches a cited URL.
     text = payload.get("output_text", "")
@@ -182,9 +185,11 @@ def choose_candidate(candidates: list[dict], query: str, purpose: str) -> tuple[
         try:
             response = req.post("https://api.openai.com/v1/responses", headers={
                 "Authorization": f"Bearer {key}", "Content-Type": "application/json",
-            }, json={"model": os.getenv("OPENAI_MODEL", "gpt-5"), "input": prompt}, timeout=90)
+            }, json={"model": resolve_model("social_ranking"), "input": prompt}, timeout=90)
             response.raise_for_status()
-            text = response.json().get("output_text", "")
+            response_data = response.json()
+            record_openai_usage(response_data, stage="social_ranking", model=resolve_model("social_ranking"))
+            text = response_data.get("output_text", "")
             decision = json.loads(text)
             index = int(decision.get("index", -1))
             if 0 <= index < len(candidates):
@@ -265,7 +270,7 @@ def analyze_clip_moment(video: Path, *, query: str, purpose: str, openai_key: st
     response = req.post("https://api.openai.com/v1/responses", headers={
         "Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
     }, json={
-        "model": os.getenv("OPENAI_VISION_MODEL", os.getenv("OPENAI_MODEL", "gpt-5")),
+        "model": resolve_model("clip_analysis", os.getenv("OPENAI_VISION_MODEL")),
         "input": [{"role": "user", "content": [
             {"type": "input_text", "text": prompt},
             {"type": "input_image", "image_url": f"data:image/jpeg;base64,{encoded}", "detail": "high"},
@@ -273,6 +278,7 @@ def analyze_clip_moment(video: Path, *, query: str, purpose: str, openai_key: st
     }, timeout=180)
     response.raise_for_status()
     payload = response.json()
+    record_openai_usage(payload, stage="clip_analysis", model=resolve_model("clip_analysis", os.getenv("OPENAI_VISION_MODEL")))
     answer = payload.get("output_text", "")
     if not answer:
         for item in payload.get("output", []):
