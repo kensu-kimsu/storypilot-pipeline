@@ -24,6 +24,10 @@ def main() -> None:
     pre.add_argument("--make-thumbnails", action="store_true")
     pre.add_argument("--acquire-assets", action="store_true")
     pre.add_argument("--youtube-audio-library-dir", type=Path)
+    retry = sub.add_parser("retry-assets", help="Retry unresolved assets in an existing job without rerunning research or script generation")
+    retry.add_argument("--job-dir", type=Path, required=True, help="Existing folder under the workspace jobs directory")
+    retry.add_argument("--base-dir", type=Path, required=True)
+    retry.add_argument("--youtube-audio-library-dir", type=Path, help="Local folder with music/ or background_music/ and sfx/ subfolders")
     edit = sub.add_parser("edit", help="Build the edit plan and render a QA-checked MP4 locally")
     edit.add_argument("job_json", type=Path, help="Timed narration segments and approved local asset manifest")
     edit.add_argument("--out", type=Path, required=True, help="Directory for the timeline handoff")
@@ -77,6 +81,19 @@ def main() -> None:
             sys.argv += ["--youtube-audio-library-dir", str(args.youtube_audio_library_dir)]
         preproduction_main()
         return
+    if args.stage == "retry-assets":
+        from prepost_pipeline import retry_job_assets
+        from workspace_setup import configure_api_keys
+        configure_api_keys(args.base_dir, required_keys=("OPENAI_API_KEY",))
+        job_dir = args.job_dir.expanduser().resolve()
+        jobs_root = (args.base_dir.expanduser().resolve() / "jobs").resolve()
+        if jobs_root not in job_dir.parents:
+            raise SystemExit(f"Job folder must be inside {jobs_root}")
+        result = retry_job_assets(job_dir, args.base_dir, args.youtube_audio_library_dir)
+        print(f"Asset retry complete: {result.get('retry_summary', {}).get('resolved_this_retry', 0)} newly resolved; "
+              f"{len(result.get('unresolved', []))} still unresolved.")
+        print(f"Updated manifest: {job_dir / 'selected_assets.json'}")
+        return
     plan = build_package(args.job_json, args.out, args.style_history)
     print(f"Edit package ready: {args.out.resolve()}")
     print(f"Planned {len(plan['shots'])} shots for {plan['duration']:.1f}s")
@@ -84,6 +101,10 @@ def main() -> None:
     from renderer import render_final_video
     render_dir = args.render_dir or args.out.parent / "rendered_outputs"
     result = render_final_video(args.job_json, render_dir, plan, encoder=args.encoder)
+    import json
+    edit_job = json.loads(args.job_json.read_text(encoding="utf-8"))
+    from prepost_pipeline import mark_job_render_status
+    mark_job_render_status(args.job_json, result, edit_job)
     print(f"Final MP4: {result['video_path']}")
     print(f"QA status: {result['status']} ({result['duration_seconds']:.1f}s, {result['canvas']['width']}x{result['canvas']['height']})")
     print(f"Motion graphics rendered: {len(result.get('motion_graphics', []))}")

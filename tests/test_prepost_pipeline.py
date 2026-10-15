@@ -16,7 +16,10 @@ from prepost_pipeline import (
     fulfill_news_headline_requests,
     get_niche_config,
     is_duplicate,
+    mark_job_render_status,
     qa_package,
+    require_no_unfinished_jobs,
+    retry_job_assets,
     search_asset_sources,
     validate_graphic_spec,
     verify_research_claims,
@@ -25,6 +28,57 @@ from prepost_pipeline import (
 
 
 class PrePostPipelineTests(unittest.TestCase):
+    def test_next_topic_stays_blocked_until_qa_passes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            folder = root / "jobs" / "topic-one"
+            folder.mkdir(parents=True)
+            (folder / "job.json").write_text(json.dumps({"job_id": "topic-one", "status": "preproduction_ready"}), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "previous topic is still unfinished"):
+                require_no_unfinished_jobs(root)
+            manifest = folder / "selected_assets.json"
+            manifest.write_text("{}", encoding="utf-8")
+            mark_job_render_status(folder / "timed_edit_job.json", {"status": "passed", "video_path": str(root / "final.mp4")},
+                                  {"assets_manifest": str(manifest), "format": "long_form"})
+            require_no_unfinished_jobs(root)
+
+    def test_short_render_alone_does_not_unlock_next_topic(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            folder = root / "jobs" / "topic-one"
+            folder.mkdir(parents=True)
+            (folder / "job.json").write_text(json.dumps({"job_id": "topic-one", "status": "preproduction_ready"}), encoding="utf-8")
+            manifest = folder / "selected_assets.json"
+            manifest.write_text("{}", encoding="utf-8")
+            mark_job_render_status(folder / "timed_edit_job.json", {"status": "passed", "video_path": "short.mp4"},
+                                  {"assets_manifest": str(manifest), "format": "short_form"})
+            with self.assertRaisesRegex(RuntimeError, "previous topic is still unfinished"):
+                require_no_unfinished_jobs(root)
+
+    def test_asset_retry_only_reprocesses_unresolved_and_keeps_existing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            folder = root / "jobs" / "topic-one"
+            folder.mkdir(parents=True)
+            existing_path = root / "present.mp4"
+            existing_path.write_bytes(b"already present")
+            (folder / "asset_requests.json").write_text(json.dumps({"assets": [
+                {"asset_id": "a1", "category": "video", "query": "existing"},
+                {"asset_id": "a2", "category": "sfx", "query": "soft page flip"},
+            ]}), encoding="utf-8")
+            (folder / "selected_assets.json").write_text(json.dumps({
+                "assets": [{"asset_id": "a1", "selected": {"path": str(existing_path)}}],
+                "unresolved": [{"asset_id": "a2", "category": "sfx", "query": "soft page flip"}],
+            }), encoding="utf-8")
+            def fake_acquire(manifest, _library):
+                self.assertEqual([row["asset_id"] for row in manifest["assets"]], ["a2"])
+                return {"assets": [{"asset_id": "a2", "selected": {"path": "effect.wav"}}], "unresolved": []}
+            with patch("media_library.acquire_asset_requests", side_effect=fake_acquire):
+                result = retry_job_assets(folder, root)
+            self.assertEqual(len(result["assets"]), 2)
+            self.assertEqual(result["unresolved"], [])
+            self.assertEqual(result["retry_summary"]["resolved_this_retry"], 1)
+
     def test_progress_dashboard_shows_subtask_and_clears_wrapped_status(self):
         progress = _ConsoleProgress()
         progress.stop_event.set()

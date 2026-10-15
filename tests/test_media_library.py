@@ -4,10 +4,20 @@ import unittest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 
-from media_library import MediaLibrary, _is_cc0_license, acquire_asset_requests
+from media_library import MediaLibrary, _is_cc0_license, acquire_asset_requests, asset_search_variants
 
 
 class MediaLibraryTests(unittest.TestCase):
+    def test_director_search_phrases_expand_to_literal_media_queries(self):
+        video = asset_search_variants("1970s printing press running financial documents", "video")
+        self.assertIn("printing press", video)
+        self.assertIn("paper documents", video)
+        audio = asset_search_variants("soft page flip", "sfx")
+        self.assertIn("page turn", audio)
+        music = asset_search_variants("subtle tension, sparse piano", "music")
+        self.assertIn("suspense underscore", music)
+        self.assertIn("sparse piano underscore", music)
+
     def test_cc0_filter_accepts_only_cc0_labels(self):
         self.assertTrue(_is_cc0_license("Creative Commons 0"))
         self.assertTrue(_is_cc0_license("CC0"))
@@ -40,6 +50,23 @@ class MediaLibraryTests(unittest.TestCase):
             self.assertEqual(len(result["assets"]), 1)
             self.assertEqual(result["assets"][0]["selected"]["source"], "wikimedia_commons")
             self.assertEqual(result["unresolved"], [])
+
+    def test_asset_acquisition_tries_broader_video_search_after_exact_query(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"PIXABAY_API_KEY": "test"}, clear=True):
+            library = MediaLibrary(Path(temp) / "assets")
+            library.find_reusable = lambda *_args, **_kwargs: []
+            searched = []
+            def search(query, category, **_kwargs):
+                searched.append(query)
+                return ([{"asset_id": "clip", "path": "archive.mp4", "category": "video", "source": "pixabay"}]
+                        if query == "printing press" else [])
+            library.download_pixabay = search
+            library.download_public_archives = lambda *_args, **_kwargs: []
+            result = acquire_asset_requests({"assets": [{"asset_id": "v1", "category": "video",
+                "query": "1970s printing press running financial documents"}]}, library)
+            self.assertGreaterEqual(len(searched), 2)
+            self.assertIn("printing press", searched)
+            self.assertEqual(result["assets"][0]["selected"]["path"], "archive.mp4")
 
     def test_video_request_never_falls_back_to_generated_still(self):
         with tempfile.TemporaryDirectory() as temp:

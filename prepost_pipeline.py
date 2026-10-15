@@ -50,6 +50,121 @@ def _write(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def unfinished_jobs(base_dir: Path) -> list[tuple[Path, str]]:
+    """Find job folders without a passed final render QA result."""
+    jobs_root = Path(base_dir) / "jobs"
+    if not jobs_root.is_dir():
+        return []
+    pending = []
+    for folder in sorted((p for p in jobs_root.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime):
+        metadata_path = folder / "job.json"
+        if not metadata_path.is_file():
+            if any(folder.iterdir()):
+                pending.append((folder, "incomplete package"))
+            continue
+        status = str(_json(metadata_path, {}).get("status", "in_progress")).lower()
+        if status not in {"completed", "qa_passed"}:
+            pending.append((folder, status))
+    return pending
+
+
+def require_no_unfinished_jobs(base_dir: Path) -> None:
+    pending = unfinished_jobs(base_dir)
+    if pending:
+        path, status = pending[0]
+        raise RuntimeError(
+            f"A previous topic is still unfinished ({status}): {path}. "
+            "Complete its asset retry, narration, render, and QA before starting another topic."
+        )
+
+
+def retry_job_assets(job_dir: Path, base_dir: Path, youtube_audio_library_dir: Path | None = None) -> dict:
+    """Retry unresolved requests in-place without regenerating research or script."""
+    from media_library import MediaLibrary, acquire_asset_requests
+
+    job_dir = Path(job_dir).expanduser().resolve()
+    base_dir = Path(base_dir).expanduser().resolve()
+    source_path = job_dir / "asset_requests.json"
+    selected_path = job_dir / "selected_assets.json"
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Job has no asset_requests.json: {source_path}")
+    source = _json(source_path, {"assets": []})
+    prior = _json(selected_path, {"assets": [], "unresolved": []})
+    request_by_id = {str(row.get("asset_id")): row for row in source.get("assets", [])}
+    unresolved_ids = {str(row.get("asset_id")) for row in prior.get("unresolved", [])}
+    existing_rows = {str(row.get("asset_id")): row for row in prior.get("assets", [])}
+    if not selected_path.is_file():
+        unresolved_ids.update(request_by_id)
+    # Retry requests omitted by an older or partial manifest as well.
+    unresolved_ids.update(set(request_by_id) - set(existing_rows) - unresolved_ids)
+    for asset_id, row in existing_rows.items():
+        selected = row.get("selected") or {}
+        if not selected.get("path") or not Path(selected["path"]).is_file():
+            unresolved_ids.add(asset_id)
+    pending = []
+    for asset_id, original in request_by_id.items():
+        if asset_id not in unresolved_ids:
+            continue
+        request = dict(original)
+        request["candidates"] = []
+        request["social_search_performed"] = False
+        pending.append(request)
+    if not pending:
+        return prior
+
+    library = MediaLibrary(base_dir / "assets")
+    if youtube_audio_library_dir:
+        audio_root = Path(youtube_audio_library_dir).expanduser()
+        for category, aliases in (("music", ("music", "background_music")), ("sfx", ("sfx",))):
+            for folder_name in aliases:
+                source_folder = audio_root / folder_name
+                if source_folder.is_dir():
+                    imported = library.import_audio_library_folder(source_folder, category)
+                    print(f"[StoryPilot] Imported {len(imported)} local YouTube Audio Library {category} file(s).", flush=True)
+                    break
+    pack = acquire_asset_requests({"assets": pending}, library)
+    merged_assets = dict(existing_rows)
+    merged_unresolved = {str(row.get("asset_id")): row for row in prior.get("unresolved", [])}
+    for row in pack.get("assets", []):
+        asset_id = str(row.get("asset_id"))
+        merged_assets[asset_id] = row
+        merged_unresolved.pop(asset_id, None)
+    for row in pack.get("unresolved", []):
+        merged_unresolved[str(row.get("asset_id"))] = row
+    result = dict(prior)
+    result["assets"] = list(merged_assets.values())
+    result["unresolved"] = list(merged_unresolved.values())
+    result["retry_summary"] = {"retried": len(pending), "resolved_this_retry": len(pack.get("assets", [])),
+                               "still_unresolved": len(result["unresolved"]),
+                               "completed_at": datetime.now(timezone.utc).isoformat()}
+    _write(selected_path, result)
+    return result
+
+
+def mark_job_render_status(job_json_path: Path, render_result: dict, edit_job: dict) -> None:
+    """Unlock the next topic only after a final render passes QA."""
+    assets_manifest = edit_job.get("assets_manifest")
+    source_job_dir = Path(assets_manifest).resolve().parent if assets_manifest else Path(job_json_path).resolve().parent
+    source_job = source_job_dir / "job.json"
+    if not source_job.is_file():
+        return
+    metadata = _json(source_job, {})
+    outputs = metadata.setdefault("rendered_outputs", {})
+    format_name = str(edit_job.get("format", "long_form"))
+    video_path = render_result.get("video_path")
+    report_path = str(Path(video_path).with_name(Path(video_path).stem + "_qa.json")) if video_path else None
+    outputs[format_name] = {"status": render_result.get("status", "failed"), "video_path": video_path,
+                            "qa_report": report_path, "completed_at": datetime.now(timezone.utc).isoformat()}
+    if outputs.get("long_form", {}).get("status") == "passed":
+        metadata["status"] = "completed"
+        metadata["completed_at"] = datetime.now(timezone.utc).isoformat()
+    elif render_result.get("status") == "passed":
+        metadata["status"] = "preproduction_ready"
+    else:
+        metadata["status"] = "qa_failed"
+    _write(source_job, metadata)
+
+
 class _ConsoleProgress:
     """Live main and indeterminate subtask bars for long-running stages."""
     def __init__(self, estimated_total_seconds: float = 900.0):
@@ -850,7 +965,7 @@ def search_asset_sources(ledger_path: Path, *, max_results: int = 3) -> dict:
     library = MediaLibrary(ledger_path.parents[2] / "assets")
     assets = [asset for asset in ledger.get("assets", []) if asset.get("category") in {"picture", "video"}]
     total = len(assets)
-    social_limit = max(0, int(os.getenv("SOCIAL_VIDEO_SEARCHES_PER_RUN", "10")))
+    social_limit = max(0, int(os.getenv("SOCIAL_VIDEO_SEARCHES_PER_RUN", "20")))
     social_queries: set[str] = set()
     for index, asset in enumerate(assets, 1):
         pct = 75 + 7 * index / max(1, total)
@@ -1079,6 +1194,12 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
     job_id = f"{_slug(channel.get('handle', 'channel'))}_{_slug(topic)}"
     out = base_dir / "jobs" / job_id
     out.mkdir(parents=True, exist_ok=True)
+    job_record_path = out / "job.json"
+    initial_record = _json(job_record_path, {})
+    started_at = initial_record.get("started_at") or datetime.now(timezone.utc).isoformat()
+    _write(job_record_path, {**initial_record, "job_id": job_id, "channel": channel,
+                             "channel_id": channel.get("channel_id"), "topic": topic,
+                             "status": "in_progress", "started_at": started_at})
     os.environ["STORYPILOT_ACTIVE_JOB_DIR"] = str(out.resolve())
 
     _progress("Research 1/5: searching for sourced claims; this may take a few minutes.")
@@ -1136,6 +1257,7 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
     )
     job_record = {"job_id": job_id, "channel": channel, "channel_id": channel.get("channel_id"),
                   "visual_brand": channel.get("visual_brand", {}), "topic": topic, "status": "preproduction_ready",
+                  "started_at": started_at, "preproduction_completed_at": datetime.now(timezone.utc).isoformat(),
                   "research_file": "research.json", "script_file": "script.json", "asset_manifest": "asset_requests.json",
                   "metadata_file": "metadata_ab_test.json", "human_polish_required": False,
                   "thumbnail_requested": bool(generate_thumbnails)}
@@ -1266,6 +1388,10 @@ def main() -> None:
     parser.add_argument("--acquire-assets", action="store_true", help="Download/reuse real video clips; AI selects and FFmpeg cuts a relevant excerpt up to five seconds")
     parser.add_argument("--youtube-audio-library-dir", type=Path, help="Folder containing downloaded YouTube Audio Library files; expected subfolders background_music/ and sfx/")
     args = parser.parse_args()
+    try:
+        require_no_unfinished_jobs(args.base_dir)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     _RUN_PROGRESS = _ConsoleProgress()
     _progress("Setup: preparing workspace and loading API credentials.")
     workspace = ensure_workspace(args.base_dir)
@@ -1305,10 +1431,13 @@ def main() -> None:
         from media_library import MediaLibrary, acquire_asset_requests
         shared_assets = MediaLibrary(args.base_dir / "assets")
         if args.youtube_audio_library_dir:
-            for category in ("music", "sfx"):
-                source_folder = args.youtube_audio_library_dir / category
-                if source_folder.exists():
-                    shared_assets.import_audio_library_folder(source_folder, category)
+            for category, aliases in (("music", ("music", "background_music")), ("sfx", ("sfx",))):
+                for folder_name in aliases:
+                    source_folder = args.youtube_audio_library_dir / folder_name
+                    if source_folder.is_dir():
+                        imported = shared_assets.import_audio_library_folder(source_folder, category)
+                        _progress(f"Audio library: indexed {len(imported)} {category} files from {source_folder.name}.")
+                        break
         requests_manifest = _json(job_dir / "asset_requests.json", {"assets": []})
         _progress(f"Asset acquisition: resolving {len(requests_manifest.get('assets', []))} scene requests; one update will appear per asset.")
         def asset_progress(index: int, total: int, message: str) -> None:

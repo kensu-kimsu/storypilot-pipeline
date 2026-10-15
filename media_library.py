@@ -39,6 +39,65 @@ FOLDERS = {
 VIDEO_SUFFIXES = {".mp4", ".webm", ".ogv", ".mov", ".mkv", ".mpeg", ".mpg"}
 
 
+def asset_search_variants(query: str, category: str) -> list[str]:
+    """Expand creative-direction prose into concise provider search phrases."""
+    original = re.sub(r"\s+", " ", str(query)).strip()
+    if not original:
+        return []
+    variants = [original]
+    reduced = re.sub(r"\b(?:18|19|20)\d{2}s?\b", " ", original.lower())
+    reduced = re.sub(
+        r"\b(?:subtle|soft|light|quiet|calm|measured|reserved|sparse|restrained|"
+        r"neutral|analytical|focused|factual|old|vintage|archival|close[- ]?up|"
+        r"no customers|empty|running|working|scene|footage|clip|video|stock)\b", " ", reduced)
+    reduced = re.sub(r"\s+", " ", reduced).strip(" ,.-")
+    if reduced and reduced.casefold() != original.casefold():
+        variants.append(reduced)
+        words = [word for word in re.findall(r"[a-z0-9]+", reduced) if len(word) > 2]
+        if len(words) > 4:
+            variants.append(" ".join(words[:4]))
+
+    rules = []
+    if category in {"video", "picture"}:
+        rules = [
+            (r"print|press|paper|document|federal register|fee schedule|shred|typewriter", ["printing press", "paper documents", "office paperwork"]),
+            (r"stock|trading|broker|invest|ticker|etf|market|exchange|index|finance|order book", ["stock market trading floor", "financial office", "trading screens"]),
+            (r"bank|teller|vault|cashier", ["bank interior", "bank teller", "financial office"]),
+            (r"office|sales team|phones|signage|desk|ledger|calculator", ["office workers", "business office", "office desk paperwork"]),
+            (r"computer|digital|screen|animation|timeline", ["computer screen data", "digital timeline", "financial computer screens"]),
+        ]
+    elif category == "sfx":
+        rules = [
+            (r"page|paper|flip|rustle", ["page turn", "paper rustling"]),
+            (r"typewriter|key tap|keyboard|typing", ["typewriter typing", "keyboard typing"]),
+            (r"whoosh|transition", ["soft whoosh", "short transition whoosh"]),
+            (r"tape|reel|hiss|static", ["tape hiss", "analog static"]),
+            (r"pen|pencil|scratch|write|underline", ["writing with pen", "pencil writing"]),
+            (r"gavel|court", ["gavel hit", "courtroom gavel"]),
+            (r"calculator|button|click", ["calculator buttons", "button clicks"]),
+            (r"shutter|camera", ["camera shutter", "camera click"]),
+        ]
+    elif category == "music":
+        rules = [
+            (r"tension|suspense|intrigue", ["suspense underscore", "ambient tension music"]),
+            (r"piano", ["sparse piano underscore", "documentary piano"]),
+            (r"investigative|procedural|analytical|factual", ["investigative documentary music", "documentary underscore"]),
+            (r"pulse|percussion|beat", ["low pulse documentary music", "subtle cinematic pulse"]),
+            (r"string", ["restrained cinematic strings", "documentary strings"]),
+            (r"quiet|focused|reserved|neutral", ["ambient documentary background music"]),
+        ]
+    for pattern, additions in rules:
+        if re.search(pattern, original, flags=re.I):
+            variants.extend(additions)
+    result, seen = [], set()
+    for item in variants:
+        item = re.sub(r"\s+", " ", item).strip(" ,.-")[:100]
+        if item and item.casefold() not in seen:
+            seen.add(item.casefold())
+            result.append(item)
+    return result
+
+
 def is_video_asset_path(value: str | Path | None) -> bool:
     """Return whether a local asset has a recognized video container suffix."""
     return bool(value and Path(value).suffix.lower() in VIDEO_SUFFIXES)
@@ -211,7 +270,7 @@ class MediaLibrary:
             except (OSError, json.JSONDecodeError):
                 search_results = None
         if search_results is None:
-            max_searches = max(1, int(os.getenv("PIXABAY_MAX_SEARCHES_PER_RUN", "10")))
+            max_searches = max(1, int(os.getenv("PIXABAY_MAX_SEARCHES_PER_RUN", "50")))
             if self.pixabay_searches_this_run >= max_searches:
                 return []
             # Pixabay requires per_page to be between 3 and 200. We may only
@@ -264,7 +323,7 @@ class MediaLibrary:
                 return json.loads(cache_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 pass
-        max_searches = max(1, int(os.getenv("PUBLIC_ARCHIVE_MAX_SEARCHES_PER_RUN", "20")))
+        max_searches = max(1, int(os.getenv("PUBLIC_ARCHIVE_MAX_SEARCHES_PER_RUN", "100")))
         if self.public_searches_this_run >= max_searches:
             return {}
         response = _require_requests().get(url, params=params, headers=headers, timeout=30)
@@ -616,7 +675,7 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
     results = {"assets": [], "unresolved": [], "source_manifest": "asset_requests.json"}
     requests = request_manifest.get("assets", [])
     total = len(requests)
-    social_search_limit = max(0, int(os.getenv("SOCIAL_VIDEO_SEARCHES_PER_RUN", "10")))
+    social_search_limit = max(0, int(os.getenv("SOCIAL_VIDEO_SEARCHES_PER_RUN", "20")))
     social_search_queries: set[str] = set()
     for index, request in enumerate(requests, 1):
         category = request.get("category")
@@ -642,9 +701,14 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
             print(f"[StoryPilot] Asset {index}/{total}: reused prior scene selection.", flush=True)
             continue
 
-        matches = library.find_reusable(query, category=category, limit=1)
-        if category == "video":
-            matches = [match for match in matches if is_video_asset_path(match.get("path"))]
+        search_variants = asset_search_variants(query, category)
+        matches = []
+        for variant in search_variants:
+            matches = library.find_reusable(variant, category=category, limit=1)
+            if category == "video":
+                matches = [match for match in matches if is_video_asset_path(match.get("path"))]
+            if matches and matches[0].get("match_score", 0) >= 0.34:
+                break
         selected = None
         if matches and matches[0]["match_score"] >= 0.34:
             selected = {**matches[0], "reused": True}
@@ -686,31 +750,33 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
                             break
                         except Exception as exc:
                             print(f"[StoryPilot] Social video candidate failed ({type(exc).__name__}); trying configured footage sources.", flush=True)
-            try:
-                if not downloads:
-                    if progress_callback:
-                        progress_callback(index, total, f"Asset {index}/{total}: searching Pixabay — {query[:28]}")
-                    downloads = library.download_pixabay(
-                        query, category=category, limit=per_request,
-                        progress_callback=(lambda message: progress_callback(index, total, message)) if progress_callback else None,
-                    )
-            except Exception as exc:
-                # Do not print the exception itself: requests.HTTPError embeds
-                # the full request URL, including the Pixabay API key.
-                response = getattr(exc, "response", None)
-                status = getattr(response, "status_code", None)
-                detail = f"HTTP {status}" if status else type(exc).__name__
-                print(f"[StoryPilot] Pixabay search failed ({detail}); trying public archives.", flush=True)
-            if not downloads:
+            for search_query in search_variants:
+                if downloads:
+                    break
                 try:
                     if progress_callback:
-                        progress_callback(index, total, f"Asset {index}/{total}: searching public archives — {query[:24]}")
-                    downloads = library.download_public_archives(
-                        query, category=category, limit=per_request,
+                        progress_callback(index, total, f"Asset {index}/{total}: Pixabay — {search_query[:28]}")
+                    downloads = library.download_pixabay(
+                        search_query, category=category, limit=per_request,
                         progress_callback=(lambda message: progress_callback(index, total, message)) if progress_callback else None,
                     )
                 except Exception as exc:
-                    print(f"[StoryPilot] Public archive search failed ({type(exc).__name__}); continuing to fallback.", flush=True)
+                    # Avoid printing an HTTP URL that could contain the API key.
+                    response = getattr(exc, "response", None)
+                    status = getattr(response, "status_code", None)
+                    detail = f"HTTP {status}" if status else type(exc).__name__
+                    print(f"[StoryPilot] Pixabay search failed ({detail}); trying archive fallback.", flush=True)
+                if downloads:
+                    break
+                try:
+                    if progress_callback:
+                        progress_callback(index, total, f"Asset {index}/{total}: public archives — {search_query[:24]}")
+                    downloads = library.download_public_archives(
+                        search_query, category=category, limit=per_request,
+                        progress_callback=(lambda message: progress_callback(index, total, message)) if progress_callback else None,
+                    )
+                except Exception as exc:
+                    print(f"[StoryPilot] Public archive search failed ({type(exc).__name__}); trying another phrase.", flush=True)
             if category == "video":
                 downloads = [item for item in downloads if is_video_asset_path(item.get("path"))]
             if downloads:
@@ -724,10 +790,27 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
                 if generated:
                     selected = {**generated, "category": "generated", "fallback_for": category,
                                 "motion_note": "Apply a restrained slow push or parallax drift in the editor"}
-        elif category in {"music", "sfx"} and os.getenv("FREESOUND_API_KEY"):
-            audio = library.download_freesound_preview(query, category=category, limit=per_request)
-            if audio:
-                selected = {**audio[0], "category": category}
+        elif category in {"music", "sfx"}:
+            # Music beds and effects often have filenames/tags that describe
+            # the instrument or object, not the director's mood sentence.
+            for variant in search_variants:
+                matches = library.find_reusable(variant, category=category, limit=1)
+                if matches and matches[0].get("match_score", 0) >= 0.25:
+                    selected = {**matches[0], "reused": True, "category": category,
+                                "matched_query": variant}
+                    break
+            if not selected and os.getenv("FREESOUND_API_KEY"):
+                for variant in search_variants[:4]:
+                    if progress_callback:
+                        progress_callback(index, total, f"Asset {index}/{total}: Freesound — {variant[:28]}")
+                    try:
+                        audio = library.download_freesound_preview(variant, category=category, limit=per_request)
+                    except Exception as exc:
+                        print(f"[StoryPilot] Freesound search failed ({type(exc).__name__}); trying another phrase.", flush=True)
+                        audio = []
+                    if audio:
+                        selected = {**audio[0], "category": category, "matched_query": variant}
+                        break
         # Music and SFX are selected from the local catalog first, then from
         # Freesound CC0 previews when an API key is configured.
         if selected:

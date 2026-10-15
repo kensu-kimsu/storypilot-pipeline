@@ -44,6 +44,17 @@ Omit `--topic` to let StoryPilot discover candidate topics, compare them with `h
 
 The job folder is `D:\YouTubeProduction\jobs\<channel-topic>\`. Expect `research.json`, `script.json`, `asset_requests.json`, `selected_assets.json`, `metadata_ab_test.json`, and `job.json`; downloaded excerpts are stored for reuse in `assets/video_clips/`. Social-video records include source URL, AI-selected in/out timecodes, visual rationale, and a note that original audio was stripped. Any unresolved media is listed in `selected_assets.json` and blocks edit readiness.
 
+If the manifest has unresolved rows, retry them without repeating research or script generation:
+
+```powershell
+python main_pipeline.py retry-assets `
+  --job-dir "D:\YouTubeProduction\jobs\<channel-topic>" `
+  --base-dir "D:\YouTubeProduction" `
+  --youtube-audio-library-dir "D:\YouTubeProduction\audio_library_seed"
+```
+
+Place YouTube Audio Library files in `audio_library_seed\background_music\` and `audio_library_seed\sfx\` (or use `music\` for the music folder). The retry searches unresolved requests, expands creative prose into simpler media search terms, preserves files already selected, and updates `selected_assets.json`. A match still depends on provider availability and relevance.
+
 For social video candidates, YouTube search uses `YOUTUBE_API_KEY`. TikTok search uses OpenAI web search and can only find pages indexed by the search engine; it is not TikTok's in-app search feed. yt-dlp and FFmpeg must be installed and available to the same Python environment/PATH. The full candidate download is temporary. If a candidate cannot be downloaded or AI finds no visually relevant moment, StoryPilot tries the next candidate and then Pixabay/archive footage. It does not download private/login-gated/DRM-protected videos or use browser cookies.
 
 ## 3. Set up the channel's visual identity once
@@ -105,6 +116,8 @@ Before creating a handoff, StoryPilot checks referenced local assets and caption
 - `rendered_outputs\<job>_<format>_qa.json` — measured duration, streams, canvas, diversity proxy, and QA status.
 
 Style history nudges automatic choices away from recently common scene modes while the story director's explicit mode takes priority. It is a diversity aid, not a monetization guarantee. Re-running the same job replaces its history record instead of adding a duplicate. Use `--style-history "D:\somewhere\style_history.json"` to choose another history file.
+
+StoryPilot blocks the next preproduction run while a topic remains unfinished. A failed or interrupted job stays locked. Only a passed long-form QA render records the topic as complete in `job.json` and unlocks the next topic; a short-only render does not.
 
 ## 6. What rendering and QA cover
 
