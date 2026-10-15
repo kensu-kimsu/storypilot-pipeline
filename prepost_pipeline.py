@@ -148,7 +148,7 @@ def get_niche_config(niche: str, prompts_file: Path | None = None) -> dict:
         "voice_name": "en-US-Ethan:MAI-Voice-2.1",
         "narration_direction": "Natural, clear English. Match the scene's emotional tone without forced slang or exaggerated delivery.",
         "default_search_fallback": "documentary topic",
-        "research_prompt": "Prioritise primary documents, reputable reporting, and independent corroboration. Flag uncertainty and conflicting accounts.",
+        "research_prompt": "Prioritise company filings, primary documents, reputable reporting, and independent corroboration. Flag uncertainty and conflicting accounts.",
         "system_prompt": "Tell a clear, evidence-led story with a strong beginning, a logical build, and a satisfying factual conclusion.",
         "retention_guidance": "Use meaningful discoveries and pay off key questions to maintain curiosity; do not invent suspense.",
     }
