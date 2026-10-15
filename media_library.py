@@ -191,7 +191,8 @@ class MediaLibrary:
                                       "metadata": json.loads(metadata), "match_score": round(score, 3)}))
         return [item for _, item in sorted(scored, key=lambda pair: pair[0], reverse=True)[:limit]]
 
-    def download_pixabay(self, query: str, category: str, limit: int = 3) -> list[dict]:
+    def download_pixabay(self, query: str, category: str, limit: int = 3,
+                        progress_callback=None) -> list[dict]:
         """Search and cache images/video from Pixabay. Music/SFX use Freesound."""
         if category not in {"picture", "video"}:
             raise ValueError("Pixabay adapter supports picture and video categories")
@@ -236,6 +237,8 @@ class MediaLibrary:
                 duration = None
             if not download_url:
                 continue
+            if progress_callback:
+                progress_callback(f"Downloading {category} from Pixabay: {query[:32]}")
             media = req.get(download_url, timeout=60)
             media.raise_for_status()
             content_type = str(getattr(media, "headers", {}).get("Content-Type", "")).split(";", 1)[0].lower()
@@ -410,7 +413,8 @@ class MediaLibrary:
         """Return keyless archive search candidates without downloading media."""
         return self._public_archive_candidates(query, category, limit)
 
-    def download_public_archives(self, query: str, category: str, limit: int = 1) -> list[dict]:
+    def download_public_archives(self, query: str, category: str, limit: int = 1,
+                                 progress_callback=None) -> list[dict]:
         """Search keyless public collections and download relevant image/video files."""
         candidates = self._public_archive_candidates(query, category, limit)
         req = _require_requests()
@@ -424,6 +428,8 @@ class MediaLibrary:
             if not download_url:
                 continue
             try:
+                if progress_callback:
+                    progress_callback(f"Downloading {category} from {provider}: {query[:28]}")
                 media = req.get(download_url, headers=headers if provider == "wikimedia_commons" else None,
                                 timeout=60, stream=True)
                 media.raise_for_status()
@@ -448,6 +454,9 @@ class MediaLibrary:
                         chunks = []
                         break
                     chunks.append(chunk)
+                    if progress_callback and content_length:
+                        percent = min(100, int(received * 100 / content_length))
+                        progress_callback(f"Downloading {category} from {provider}: {percent}%")
                 if not chunks:
                     continue
                 if category == "video" and not is_video_asset_path(suffix):
@@ -614,7 +623,7 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
         query = str(request.get("query", "")).strip()
         print(f"\n[StoryPilot] Asset acquisition {index}/{total}: {category or 'unknown'} — {query[:90]}", flush=True)
         if progress_callback:
-            progress_callback(index, total, f"{category or 'unknown'} — {query[:48]}")
+            progress_callback(index, total, f"Asset {index}/{total}: checking local library — {query[:30]}")
         if not query or category not in FOLDERS:
             results["unresolved"].append({**request, "status": "invalid_request"})
             print(f"[StoryPilot] Asset {index}/{total}: invalid request.", flush=True)
@@ -628,6 +637,8 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
         cached = library.cached_request_selection(request_key, category)
         if cached:
             results["assets"].append({**request, "status": "reused_cached_selection", "selected": {**cached, "reused": True}})
+            if progress_callback:
+                progress_callback(index, total, f"Asset {index}/{total}: reused saved selection — {query[:28]}")
             print(f"[StoryPilot] Asset {index}/{total}: reused prior scene selection.", flush=True)
             continue
 
@@ -657,6 +668,8 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
                 )
                 if should_search:
                     social_search_queries.add(query_key)
+                    if progress_callback:
+                        progress_callback(index, total, f"Asset {index}/{total}: searching YouTube/TikTok — {query[:26]}")
                     candidates = discover_social_videos(query, limit_per_platform=1)
                 if candidates:
                     chosen_candidate, choose_reason = choose_candidate(candidates, query, str(request.get("purpose", "")))
@@ -664,6 +677,8 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
                     max_attempts = max(1, min(int(os.getenv("SOCIAL_VIDEO_MAX_CANDIDATES", "2")), 4))
                     for candidate in ordered[:max_attempts]:
                         try:
+                            if progress_callback:
+                                progress_callback(index, total, f"Asset {index}/{total}: downloading and trimming {candidate.get('source', 'social')} clip")
                             print(f"[StoryPilot] Testing {candidate.get('source', 'social video')} candidate for this scene.", flush=True)
                             social = library.download_social_candidate(candidate, request)
                             social["metadata"] = {**(social.get("metadata") or {}), "candidate_selection_reason": choose_reason}
@@ -673,7 +688,12 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
                             print(f"[StoryPilot] Social video candidate failed ({type(exc).__name__}); trying configured footage sources.", flush=True)
             try:
                 if not downloads:
-                    downloads = library.download_pixabay(query, category=category, limit=per_request)
+                    if progress_callback:
+                        progress_callback(index, total, f"Asset {index}/{total}: searching Pixabay — {query[:28]}")
+                    downloads = library.download_pixabay(
+                        query, category=category, limit=per_request,
+                        progress_callback=(lambda message: progress_callback(index, total, message)) if progress_callback else None,
+                    )
             except Exception as exc:
                 # Do not print the exception itself: requests.HTTPError embeds
                 # the full request URL, including the Pixabay API key.
@@ -683,7 +703,12 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
                 print(f"[StoryPilot] Pixabay search failed ({detail}); trying public archives.", flush=True)
             if not downloads:
                 try:
-                    downloads = library.download_public_archives(query, category=category, limit=per_request)
+                    if progress_callback:
+                        progress_callback(index, total, f"Asset {index}/{total}: searching public archives — {query[:24]}")
+                    downloads = library.download_public_archives(
+                        query, category=category, limit=per_request,
+                        progress_callback=(lambda message: progress_callback(index, total, message)) if progress_callback else None,
+                    )
                 except Exception as exc:
                     print(f"[StoryPilot] Public archive search failed ({type(exc).__name__}); continuing to fallback.", flush=True)
             if category == "video":
@@ -712,11 +737,15 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
             )
             results["assets"].append({**request, "status": status,
                                       "selected": selected})
+            if progress_callback:
+                progress_callback(index, total, f"Asset {index}/{total}: saved or reused — {query[:28]}")
             library.cache_request_selection(request_key, selected)
             print(f"[StoryPilot] Asset {index}/{total}: resolved ({status}).", flush=True)
         else:
             status = "no_video_clip_match_in_configured_sources" if category == "video" else "no_match_in_configured_sources"
             results["unresolved"].append({**request, "status": status})
+            if progress_callback:
+                progress_callback(index, total, f"Asset {index}/{total}: no match — {query[:34]}")
             print(f"[StoryPilot] Asset {index}/{total}: no match in configured sources.", flush=True)
     return results
 
