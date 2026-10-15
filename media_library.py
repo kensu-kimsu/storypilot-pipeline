@@ -690,6 +690,29 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
         print(f"\n[StoryPilot] Asset acquisition {index}/{total}: {category or 'unknown'} — {query[:90]}", flush=True)
         if progress_callback:
             progress_callback(index, total, f"Asset {index}/{total}: checking local library — {query[:30]}")
+        if category == "news_headline_screenshot":
+            screenshot_path = Path(str(request.get("local_path") or request.get("image_path") or ""))
+            if request.get("status") == "captured" and screenshot_path.is_file():
+                selected = {
+                    "asset_id": request.get("asset_id"), "category": category,
+                    "path": str(screenshot_path.resolve()), "source": "news_article_screenshot",
+                    "source_url": request.get("url", ""), "license": request.get("license"),
+                    "creator": request.get("publisher"),
+                    "metadata": {"headline": request.get("headline"),
+                                 "publisher": request.get("publisher"),
+                                 "highlighted_keywords": request.get("highlighted_keywords", []),
+                                 "captured_at": request.get("captured_at")},
+                }
+                results["assets"].append({**request, "status": "screenshot_captured", "selected": selected})
+                if progress_callback:
+                    progress_callback(index, total, f"Asset {index}/{total}: using captured headline screenshot")
+                print(f"[StoryPilot] Asset {index}/{total}: using captured headline screenshot.", flush=True)
+            else:
+                results["unresolved"].append({**request, "status": "screenshot_not_captured"})
+                if progress_callback:
+                    progress_callback(index, total, f"Asset {index}/{total}: requested headline screenshot not captured")
+                print(f"[StoryPilot] Asset {index}/{total}: requested headline screenshot is not available locally.", flush=True)
+            continue
         if not query or category not in FOLDERS:
             results["unresolved"].append({**request, "status": "invalid_request"})
             print(f"[StoryPilot] Asset {index}/{total}: invalid request.", flush=True)

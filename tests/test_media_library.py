@@ -61,6 +61,23 @@ class MediaLibraryTests(unittest.TestCase):
             self.assertEqual(client.get.call_count, 3)
             self.assertNotIn("filter", client.get.call_args_list[0].kwargs["params"])
 
+    def test_captured_news_headline_is_not_sent_to_generic_downloader(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            screenshot = root / "headline.png"
+            screenshot.write_bytes(b"captured headline image")
+            library = MediaLibrary(root / "assets")
+            result = acquire_asset_requests({"assets": [{
+                "asset_id": "news_headline_01", "category": "news_headline_screenshot",
+                "status": "captured", "local_path": str(screenshot),
+                "url": "https://example.org/article", "headline": "A relevant headline",
+                "publisher": "Example News", "highlighted_keywords": ["relevant"],
+            }]}, library)
+            self.assertEqual(result["unresolved"], [])
+            selected = result["assets"][0]["selected"]
+            self.assertEqual(result["assets"][0]["status"], "screenshot_captured")
+            self.assertEqual(selected["path"], str(screenshot.resolve()))
+
     def test_pixabay_searches_are_cached_and_capped_per_run(self):
         with tempfile.TemporaryDirectory() as temp:
             library = MediaLibrary(Path(temp) / "assets")
