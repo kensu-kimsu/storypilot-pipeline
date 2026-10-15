@@ -360,6 +360,8 @@ def openai_response(prompt: str, *, web_search: bool = False, model: str | None 
         try:
             parse_json_text(response_text(data))
         except (json.JSONDecodeError, TypeError, ValueError):
+            # Both requests are billable when malformed JSON triggers a retry.
+            record_openai_usage(data, stage=stage, model=selected_model, web_search=web_search)
             fallback_response = HTTP.post(
                 f"{API_ROOT}/responses", headers=headers,
                 json={**payload, "model": fallback_model}, timeout=240,
