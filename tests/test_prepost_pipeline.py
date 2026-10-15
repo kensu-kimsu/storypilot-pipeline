@@ -14,6 +14,7 @@ from prepost_pipeline import (
     resolve_thumbnail_reference,
     asset_research,
     fulfill_news_headline_requests,
+    find_news_article,
     get_niche_config,
     is_duplicate,
     mark_job_render_status,
@@ -412,6 +413,29 @@ class PrePostPipelineTests(unittest.TestCase):
             )
             self.assertFalse(result["searched"])
             self.assertFalse((root / "assets" / "screenshots").exists())
+
+    def test_news_article_discovery_uses_python_rss_not_openai(self):
+        rss = b'''<?xml version="1.0" encoding="UTF-8"?>
+        <rss><channel><item>
+          <title>Vanguard changes fund structure - Reuters</title>
+          <link>https://news.google.com/rss/articles/example</link>
+          <pubDate>Wed, 15 Oct 2026 10:00:00 GMT</pubDate>
+          <source url="https://www.reuters.com">Reuters</source>
+        </item></channel></rss>'''
+        response = unittest.mock.Mock(content=rss)
+        response.raise_for_status.return_value = None
+        http = unittest.mock.Mock()
+        http.get.return_value = response
+        with patch("prepost_pipeline.requests", object()), patch("prepost_pipeline.HTTP", http), \
+                patch("prepost_pipeline.openai_response", side_effect=AssertionError("OpenAI must not be used for screenshot search")):
+            result = find_news_article("Vanguard story", {
+                "search_query": "Vanguard fund structure", "highlight_keywords": ["Vanguard"],
+            })
+        self.assertEqual(result["headline"], "Vanguard changes fund structure")
+        self.assertEqual(result["publisher"], "Reuters")
+        self.assertEqual(result["search_provider"], "google_news_rss")
+        self.assertEqual(http.get.call_args.args[0], "https://news.google.com/rss/search")
+        self.assertEqual(http.get.call_args.kwargs["params"]["q"], "Vanguard fund structure")
 
     def test_creative_brief_request_creates_news_headline_asset(self):
         with tempfile.TemporaryDirectory() as temp:

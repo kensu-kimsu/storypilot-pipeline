@@ -16,6 +16,7 @@ import shutil
 import sys
 import threading
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -147,7 +148,7 @@ def retry_job_assets(job_dir: Path, base_dir: Path, youtube_audio_library_dir: P
                 for row in retryable:
                     row.update(status="failed", error="Cannot retry screenshot: job.json has no topic")
             else:
-                print(f"[StoryPilot] Retrying {len(retryable)} requested news headline screenshot(s) with web search and capture.", flush=True)
+                print(f"[StoryPilot] Retrying {len(retryable)} requested news headline screenshot(s) with Google News RSS and capture.", flush=True)
                 try:
                     capture_manifest = fulfill_news_headline_requests(
                         topic, {"narration_chunks": screenshot_chunks}, base_dir / "assets", job_id=job_dir.name
@@ -440,27 +441,54 @@ def _article_screenshot_requests(script: dict) -> list[dict]:
 
 
 def find_news_article(topic: str, request: dict) -> dict | None:
-    """Use OpenAI web search for a headline only when the creative brief asks for one."""
-    prompt = f"""Find one real article from an established news publisher for a documentary visual.
-Topic: {topic}
-Article search query: {request['search_query']}
-The article should visibly show at least one of these terms (or a clear inflection) in its headline: {json.dumps(request['highlight_keywords'])}.
-Search the web. Choose a directly accessible article from one of these publishers only: {', '.join(sorted(NEWS_PUBLISHER_DOMAINS))}.
-Return strict JSON: {{"article":null}} if no verifiable match exists; otherwise {{"article":{{"headline":"exact published headline","url":"direct article URL","publisher":"publisher","published_date":"date or unknown"}}}}.
-Do not invent headlines, URLs, dates, or citations. Do not return a search results page or a homepage."""
-    response = openai_response(prompt, web_search=True, stage="news_search")
-    data = parse_json_text(response_text(response))
-    article = data.get("article")
-    if not isinstance(article, dict):
+    """Search the public Google News RSS feed from Python, without OpenAI API calls.
+
+    Google News RSS is an undocumented interface, so this is keyless but may
+    change or rate-limit requests. The returned article link is opened by
+    Playwright later, where its final publisher domain and visible headline are
+    checked before a screenshot is saved.
+    """
+    _require_requests()
+    search_query = str(request.get("search_query") or "").strip()
+    if not search_query:
         return None
-    if not article.get("headline") or not _is_approved_news_url(str(article.get("url", ""))):
-        return None
-    return {
-        "headline": str(article["headline"]).strip(),
-        "url": str(article["url"]).strip(),
-        "publisher": str(article.get("publisher") or urlparse(article["url"]).hostname),
-        "published_date": article.get("published_date", "unknown"),
-    }
+    response = HTTP.get(
+        "https://news.google.com/rss/search",
+        params={"q": search_query, "hl": "en-AU", "gl": "AU", "ceid": "AU:en"},
+        headers={"User-Agent": "StoryPilot/1.0 (+headline research)"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    try:
+        root = ET.fromstring(response.content)
+    except ET.ParseError as exc:
+        raise ValueError(f"Google News returned invalid RSS/XML: {exc}") from exc
+
+    keywords = [str(value).strip().casefold() for value in request.get("highlight_keywords", []) if str(value).strip()]
+    for item in root.findall(".//item")[:30]:
+        title = " ".join((item.findtext("title") or "").split())
+        link = (item.findtext("link") or "").strip()
+        source_node = item.find("source")
+        publisher = " ".join((source_node.text if source_node is not None and source_node.text else "").split())
+        publisher_url = source_node.get("url", "") if source_node is not None else ""
+        if not title or not link or not _is_approved_news_url(publisher_url):
+            continue
+        # Google News often appends the publisher after a final dash. Remove it
+        # only when it matches the structured source element.
+        if publisher and title.casefold().endswith(f" - {publisher}".casefold()):
+            title = title[: -(len(publisher) + 3)].strip()
+        if keywords and not any(keyword in title.casefold() for keyword in keywords):
+            continue
+        return {
+            "headline": title,
+            # Google News links redirect to the publisher. _capture_headline()
+            # validates the final browser URL against the publisher allowlist.
+            "url": link,
+            "publisher": publisher or urlparse(publisher_url).hostname,
+            "published_date": (item.findtext("pubDate") or "unknown").strip(),
+            "search_provider": "google_news_rss",
+        }
+    return None
 
 
 def _capture_headline(candidate: dict, keywords: list[str], image_path: Path) -> dict:
