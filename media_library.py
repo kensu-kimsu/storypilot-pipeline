@@ -104,6 +104,12 @@ class MediaLibrary:
         selected_category = selection.get("category")
         if not path.is_file() or (selected_category != category and selection.get("fallback_for") != category):
             return None
+        try:
+            stat = path.stat()
+            if stat.st_size != int(selection.get("_cache_size", -1)) or stat.st_mtime_ns != int(selection.get("_cache_mtime_ns", -1)):
+                return None
+        except OSError:
+            return None
         if category == "video" and not is_video_asset_path(path):
             return None
         return selection
@@ -114,7 +120,14 @@ class MediaLibrary:
             cache = json.loads(self.request_cache_path.read_text(encoding="utf-8")) if self.request_cache_path.is_file() else {}
         except (OSError, json.JSONDecodeError):
             cache = {}
-        cache[request_key] = selection
+        cached = dict(selection)
+        path = Path(str(cached.get("path", "")))
+        if not path.is_file():
+            return
+        stat = path.stat()
+        cached["_cache_size"] = stat.st_size
+        cached["_cache_mtime_ns"] = stat.st_mtime_ns
+        cache[request_key] = cached
         temp = self.request_cache_path.with_suffix(".json.tmp")
         temp.write_text(json.dumps(cache, indent=2, ensure_ascii=False), encoding="utf-8")
         temp.replace(self.request_cache_path)
