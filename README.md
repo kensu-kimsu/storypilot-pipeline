@@ -430,9 +430,8 @@ continue to use the existing `OPENAI_MODEL` setting. To trial the lower-cost
 model for packaging while preserving the main model for research and scripting:
 
 ```dotenv
-OPENAI_MODEL=gpt-6.1-sol
 OPENAI_MODEL_METADATA=gpt-6-luna
-OPENAI_MODEL_METADATA_FALLBACK=gpt-6.1-sol
+OPENAI_MODEL_METADATA_FALLBACK=gpt-5
 ```
 
 The fallback runs only when a configured JSON stage returns malformed JSON.
