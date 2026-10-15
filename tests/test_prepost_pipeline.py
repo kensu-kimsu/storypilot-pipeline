@@ -79,6 +79,52 @@ class PrePostPipelineTests(unittest.TestCase):
             self.assertEqual(result["unresolved"], [])
             self.assertEqual(result["retry_summary"]["resolved_this_retry"], 1)
 
+    def test_asset_retry_recaptures_requested_news_headline_screenshot(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            folder = root / "jobs" / "topic-one"
+            folder.mkdir(parents=True)
+            screenshot_path = root / "assets" / "screenshots" / "topic-one" / "headline.png"
+            screenshot_path.parent.mkdir(parents=True)
+            screenshot_path.write_bytes(b"png")
+            request = {
+                "asset_id": "news_headline_01", "category": "news_headline_screenshot",
+                "query": "Vanguard investor story", "highlight_keywords": ["Vanguard"],
+            }
+            (folder / "asset_requests.json").write_text(json.dumps({"assets": [request]}), encoding="utf-8")
+            (folder / "job.json").write_text(json.dumps({"topic": "Vanguard investor story"}), encoding="utf-8")
+            (folder / "script.json").write_text(json.dumps({"narration_chunks": []}), encoding="utf-8")
+            (folder / "selected_assets.json").write_text(json.dumps({
+                "assets": [], "unresolved": [{"asset_id": "news_headline_01", "category": "news_headline_screenshot"}],
+            }), encoding="utf-8")
+
+            def fake_capture(topic, script, assets_root, *, job_id):
+                self.assertEqual(topic, "Vanguard investor story")
+                self.assertEqual(job_id, "topic-one")
+                screenshot_request = script["narration_chunks"][0]["news_article_screenshot"]
+                self.assertEqual(screenshot_request["asset_id"], "news_headline_01")
+                self.assertEqual(screenshot_request["search_query"], "Vanguard investor story")
+                return {"screenshots": [{
+                    "asset_id": "news_headline_01", "status": "captured", "url": "https://reuters.com/story",
+                    "publisher": "Reuters", "headline": "Vanguard changes investing", "image_path": str(screenshot_path),
+                    "highlighted_keywords": ["Vanguard"],
+                }]}
+
+            def fake_acquire(manifest, _library):
+                item = manifest["assets"][0]
+                self.assertEqual(item["status"], "captured")
+                self.assertEqual(item["local_path"], str(screenshot_path))
+                return {"assets": [{**item, "selected": {"path": str(screenshot_path)}}], "unresolved": []}
+
+            with patch("prepost_pipeline.fulfill_news_headline_requests", side_effect=fake_capture), \
+                    patch("media_library.acquire_asset_requests", side_effect=fake_acquire):
+                result = retry_job_assets(folder, root)
+
+            self.assertEqual(result["unresolved"], [])
+            source = json.loads((folder / "asset_requests.json").read_text(encoding="utf-8"))
+            self.assertEqual(source["assets"][0]["status"], "captured")
+            self.assertEqual(source["assets"][0]["headline"], "Vanguard changes investing")
+
     def test_progress_dashboard_shows_subtask_and_clears_wrapped_status(self):
         progress = _ConsoleProgress()
         progress.stop_event.set()

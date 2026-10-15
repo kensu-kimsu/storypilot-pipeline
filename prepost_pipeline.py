@@ -112,6 +112,77 @@ def retry_job_assets(job_dir: Path, base_dir: Path, youtube_audio_library_dir: P
     if not pending:
         return prior
 
+    # A headline screenshot is generated on demand during preproduction. Retry
+    # that same search-and-capture workflow here instead of treating the
+    # screenshot as a file that the user must supply manually.
+    screenshot_pending = [row for row in pending if row.get("category") == "news_headline_screenshot"]
+    if screenshot_pending:
+        job_record = _json(job_dir / "job.json", {})
+        script = _json(job_dir / "script.json", {})
+        script_requests = {
+            row["asset_id"]: row for row in _article_screenshot_requests(script)
+        }
+        screenshot_chunks = []
+        retryable = []
+        for row in screenshot_pending:
+            asset_id = str(row.get("asset_id", ""))
+            script_row = script_requests.get(asset_id, {})
+            search_query = str(row.get("search_query") or row.get("query") or script_row.get("search_query") or "").strip()
+            keywords = row.get("highlight_keywords") or script_row.get("highlight_keywords") or row.get("keywords") or []
+            keywords = [str(value).strip() for value in keywords if str(value).strip()]
+            if not search_query or not keywords:
+                row.update(status="failed", error="Screenshot request is missing a search query or highlight keywords in asset_requests.json and script.json")
+                continue
+            retryable.append(row)
+            screenshot_chunks.append({"news_article_screenshot": {
+                "asset_id": asset_id,
+                "search_query": search_query,
+                "highlight_keywords": keywords,
+                "reason": row.get("reason") or script_row.get("reason", ""),
+            }})
+
+        if retryable:
+            topic = str(job_record.get("topic") or "").strip()
+            if not topic:
+                for row in retryable:
+                    row.update(status="failed", error="Cannot retry screenshot: job.json has no topic")
+            else:
+                print(f"[StoryPilot] Retrying {len(retryable)} requested news headline screenshot(s) with web search and capture.", flush=True)
+                try:
+                    capture_manifest = fulfill_news_headline_requests(
+                        topic, {"narration_chunks": screenshot_chunks}, base_dir / "assets", job_id=job_dir.name
+                    )
+                    captures = {str(item.get("asset_id")): item for item in capture_manifest.get("screenshots", [])}
+                    for row in retryable:
+                        captured = captures.get(str(row.get("asset_id")))
+                        if captured:
+                            row.update({key: captured[key] for key in (
+                                "status", "url", "publisher", "headline", "image_path", "highlighted_keywords",
+                                "captured_at", "error", "searched", "published_date", "http_status",
+                            ) if key in captured})
+                            if captured.get("status") == "captured":
+                                row["local_path"] = captured.get("image_path")
+                        else:
+                            row.update(status="failed", error="Headline screenshot retry returned no result")
+                except Exception as exc:
+                    for row in retryable:
+                        row.update(status="failed", error=f"Screenshot retry failed: {type(exc).__name__}: {str(exc)[:250]}")
+
+        # Persist the capture metadata to the source manifest so later retries
+        # and QA can explain what happened, even if no screenshot was captured.
+        for row in screenshot_pending:
+            original = request_by_id.get(str(row.get("asset_id")))
+            if original is not None:
+                original.update({key: row[key] for key in (
+                    "status", "error", "search_query", "highlight_keywords", "url", "publisher", "headline",
+                    "image_path", "local_path", "highlighted_keywords", "captured_at", "searched",
+                    "published_date", "http_status",
+                ) if key in row})
+        _write(source_path, source)
+        # Refresh from the updated source rows before passing them to acquisition.
+        pending_by_id = {str(row.get("asset_id")): row for row in pending}
+        pending = [pending_by_id.get(str(row.get("asset_id")), row) for row in pending]
+
     library = MediaLibrary(base_dir / "assets")
     if youtube_audio_library_dir:
         audio_root = Path(youtube_audio_library_dir).expanduser()
@@ -355,7 +426,7 @@ def _article_screenshot_requests(script: dict) -> list[dict]:
         if not keywords:
             continue
         requests_list.append({
-            "asset_id": f"news_headline_{len(requests_list)+1:02d}",
+            "asset_id": str(request.get("asset_id") or f"news_headline_{len(requests_list)+1:02d}"),
             "category": "news_headline_screenshot",
             "segment": segment,
             "search_query": str(request["search_query"]).strip(),
