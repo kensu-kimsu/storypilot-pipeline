@@ -27,6 +27,8 @@ try:
 except ImportError:  # pure local QA helpers remain importable without API extras
     requests = None
 
+from cost_controls import load_checkpoint, record_openai_usage, resolve_model, save_checkpoint, signature as stage_signature
+
 API_ROOT = "https://api.openai.com/v1"
 YT_ROOT = "https://www.googleapis.com/youtube/v3"
 HTTP = requests.Session() if requests is not None else None
@@ -220,7 +222,7 @@ The article should visibly show at least one of these terms (or a clear inflecti
 Search the web. Choose a directly accessible article from one of these publishers only: {', '.join(sorted(NEWS_PUBLISHER_DOMAINS))}.
 Return strict JSON: {{"article":null}} if no verifiable match exists; otherwise {{"article":{{"headline":"exact published headline","url":"direct article URL","publisher":"publisher","published_date":"date or unknown"}}}}.
 Do not invent headlines, URLs, dates, or citations. Do not return a search results page or a homepage."""
-    response = openai_response(prompt, web_search=True)
+    response = openai_response(prompt, web_search=True, stage="news_search")
     data = parse_json_text(response_text(response))
     article = data.get("article")
     if not isinstance(article, dict):
@@ -335,20 +337,38 @@ def fulfill_news_headline_requests(topic: str, script: dict, assets_root: Path, 
     return manifest
 
 
-def openai_response(prompt: str, *, web_search: bool = False, model: str | None = None) -> dict:
+def openai_response(prompt: str, *, web_search: bool = False, model: str | None = None,
+                    stage: str = "general") -> dict:
+    """Call Responses API with stage routing, usage logging, and optional JSON fallback."""
     _require_requests()
     key = os.environ.get("OPENAI_API_KEY")
     if not key:
         raise RuntimeError("OPENAI_API_KEY is required")
-    payload: dict[str, Any] = {
-        "model": model or os.environ.get("OPENAI_MODEL", "gpt-5"),
-        "input": prompt,
-    }
+    selected_model = resolve_model(stage, model)
+    payload: dict[str, Any] = {"model": selected_model, "input": prompt}
     if web_search:
         payload["tools"] = [{"type": "web_search"}]
-    response = HTTP.post(f"{API_ROOT}/responses", headers={"Authorization": f"Bearer {key}"}, json=payload, timeout=240)
+    headers = {"Authorization": f"Bearer {key}"}
+    response = HTTP.post(f"{API_ROOT}/responses", headers=headers, json=payload, timeout=240)
     response.raise_for_status()
-    return response.json()
+    data = response.json()
+
+    # Optional fallback runs only when a configured low-risk JSON stage returns
+    # malformed JSON. It never silently downgrades research or fact-checking.
+    fallback_model = os.getenv(f"OPENAI_MODEL_{stage.upper()}_FALLBACK", "").strip()
+    if fallback_model and stage in {"ideation", "news_search", "social_ranking"}:
+        try:
+            parse_json_text(response_text(data))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            fallback_response = HTTP.post(
+                f"{API_ROOT}/responses", headers=headers,
+                json={**payload, "model": fallback_model}, timeout=240,
+            )
+            fallback_response.raise_for_status()
+            data = fallback_response.json()
+            selected_model = fallback_model
+    record_openai_usage(data, stage=stage, model=selected_model, web_search=web_search)
+    return data
 
 
 def response_text(response: dict) -> str:
@@ -427,7 +447,7 @@ Recent high-performing public videos (inspiration only; do not copy titles or st
 Previously covered topics (avoid these): {json.dumps([x.get('topic') for x in history], ensure_ascii=False)}
 Return strict JSON {{"ideas":[{{"topic":"specific original topic","angle":"distinctive thesis","why_now":"audience rationale","source_questions":["research question"]}}]}}.
 Do not state unverified facts. Ideas should be researchable using primary/credible sources."""
-    payload = parse_json_text(response_text(openai_response(prompt)))
+    payload = parse_json_text(response_text(openai_response(prompt, stage="ideation")))
     ideas = payload.get("ideas", [])
     return [idea for idea in ideas if idea.get("topic") and not is_duplicate(idea["topic"], history)][:count]
 
@@ -440,7 +460,7 @@ Use web search. Build a source-backed evidence ledger for a 20-minute documentar
 Niche research guidance: {niche_config.get('research_prompt', '')}
 Return strict JSON: {{"research_brief":"...","claims":[{{"claim_id":"C1","claim":"one checkable factual claim","source_title":"...","url":"https://...","publisher":"...","published_or_accessed":"...","source_type":"primary|official|academic|reporting|archive|other","support":"short paraphrase of the relevant evidence","confidence":"high|medium|low","caveat":"qualification or empty string","geo_points":[{{"name":"place name in the claim","latitude":0.0,"longitude":0.0,"source_url":"direct URL supporting these coordinates"}}]}}],"open_questions":["..."]}}.
 The brief may contain only claims represented in the ledger. Prioritise original records over summaries and flag conflicting evidence explicitly."""
-    response = openai_response(prompt, web_search=True)
+    response = openai_response(prompt, web_search=True, stage="research")
     data = parse_json_text(response_text(response))
     data["search_response_id"] = response.get("id")
     data["verified_claims"] = []
@@ -462,7 +482,7 @@ Use web search to inspect the cited source and seek independent corroboration. C
 Claims: {json.dumps(claims, ensure_ascii=False)}
 Return strict JSON: {{"results":[{{"claim_id":"C1","status":"verified|qualified|unverified|disputed","verification_note":"what the sources support or fail to support","checked_sources":[{{"title":"...","url":"...","support":"short evidence summary"}}],"checked_geo_points":[{{"name":"...","latitude":0.0,"longitude":0.0,"source_url":"https://..."}}]}}]}}.
 Provide at least one checked source for each verified or qualified claim. Do not invent source URLs."""
-    response = openai_response(prompt, web_search=True)
+    response = openai_response(prompt, web_search=True, stage="verification")
     checked = parse_json_text(response_text(response)).get("results", [])
     by_id = {str(item.get("claim_id")): item for item in checked if item.get("claim_id")}
     verified = []
@@ -678,7 +698,7 @@ Add optional `graphic_spec` for evidence-backed graphics only. Charts use 2-6 it
 For each narration chunk, decide whether a real news headline is creatively necessary. Normally set "news_article_screenshot": null. Request one only when an actual news headline materially strengthens the scene (for example, showing contemporaneous media coverage of a major event). Do not request generic headlines or decorative screenshots; request at most two total. When needed, set {{"search_query":"specific article/story query","highlight_keywords":["one or two exact headline terms"],"reason":"why the headline itself helps this scene"}}.
 Research ledger (only these verified claims may support factual narration): {json.dumps(claims, ensure_ascii=False)}
 Return strict JSON {{"title_working":"...","logline":"...","narration_direction":"...","voice_name":"{voice_name}","narration_chunks":[{{"section_title":"...","text":"...","claim_ids":["C1"],"tone":"...","delivery_emotion":"...","delivery_pace":"measured|brisk|slow","vocal_intensity":0.5,"pause_after_seconds":0.5,"audio_energy":0.5,"retention_function":"...","visual_mode":"one allowed mode","visual_evidence":"specific verified story detail to show","visual_rationale":"why this treatment fits the beat","visual_note":"...","asset_queries":["scene-specific real video footage search phrase"],"reference_urls":[],"parallax_assets":null,"graphic_spec":null,"news_article_screenshot":null,"music_mood":"...","sfx_cues":["..."]}}],"shorts_script":{{"text":"standalone complete 30-second short, about 60-75 words","hook":"...","payoff":"...","claim_ids":["C1"],"narration_direction":"..."}}}}."""
-    script = parse_json_text(response_text(openai_response(prompt)))
+    script = parse_json_text(response_text(openai_response(prompt, stage="scripting")))
     graphic_issues = []
     for index, chunk in enumerate(script.get("narration_chunks", []), 1):
         validated, issue = validate_graphic_spec(chunk.get("graphic_spec"), chunk, claims)
@@ -810,7 +830,7 @@ def make_metadata(topic: str, channel: dict, script: dict) -> dict:
     prompt = f"""Create truthful YouTube packaging for this documentary. No unsupported promise, false urgency, or claim beyond the verified story.
 Topic: {topic}; channel: {channel.get('name', channel.get('handle'))}.
 Script summary: {script.get('logline')}\nReturn strict JSON {{"title_variants":[{{"title":"...","hypothesis":"..."}} x 3],"description":"...","tags":["..."],"thumbnail_briefs":[{{"subject":"specific recognizable person, brand, or company from this story","subject_type":"person|brand|company","recognition_cues":"distinctive verified appearance, product, colors, or logo","concept":"...","composition":"...","text":"2-3 word curiosity hook, not the title","contrast_angle":"..."}}]}} with exactly ONE thumbnail brief. Choose a recognizable named person, brand, or company central to the story as the main focal subject. Do not substitute a generic silhouette if an actual subject is identifiable from the topic and script. The actual source image will be placed in the thumbnail directly, so select a subject that can be found in Wikimedia Commons or another public image archive. Keep title variants distinct hypotheses. The thumbnail should read on a phone and create a truthful curiosity gap without repeating the title."""
-    data = parse_json_text(response_text(openai_response(prompt)))
+    data = parse_json_text(response_text(openai_response(prompt, stage="metadata")))
     data["thumbnail_briefs"] = data.get("thumbnail_briefs", [])[:1]
     data["testing_note"] = "For native YouTube test, use YouTube Studio's concurrent test when available. Do not sequentially swap manually and call it a controlled A/B test. API support for starting the native experiment is not assumed."
     return data
@@ -980,21 +1000,53 @@ def create_thumbnail_from_reference(reference: dict, concept: dict, path: Path,
     canvas.convert("RGB").save(path, format="PNG")
 
 
+def _cached_job_stage(out: Path, stage: str, inputs: Any, filename: str, producer) -> Any:
+    """Load a completed stage when its exact inputs match; otherwise run and checkpoint it."""
+    stage_sig = stage_signature({"cache_version": 1, "stage": stage, "inputs": inputs})
+    cached = load_checkpoint(out, stage, stage_sig, filename)
+    if cached is not None:
+        _progress(f"Resume: reusing cached {stage} result.")
+        return cached
+    result = producer()
+    save_checkpoint(out, stage, stage_sig, filename, result)
+    return result
+
+
 def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnails: bool = False,
                 niche_config: dict | None = None) -> Path:
     niche_config = niche_config or get_niche_config(channel.get("niche", ""))
     job_id = f"{_slug(channel.get('handle', 'channel'))}_{_slug(topic)}"
     out = base_dir / "jobs" / job_id
     out.mkdir(parents=True, exist_ok=True)
+    os.environ["STORYPILOT_ACTIVE_JOB_DIR"] = str(out.resolve())
+
     _progress("Research 1/5: searching for sourced claims; this may take a few minutes.")
-    research = research_story(topic, channel, niche_config)
+    research_inputs = {"topic": topic, "niche": channel.get("niche"), "research_prompt": niche_config.get("research_prompt")}
+    research = _cached_job_stage(
+        out, "research", research_inputs, "research_raw.json",
+        lambda: research_story(topic, channel, niche_config),
+    )
+
     _progress(f"Research 2/5: independently checking {len(research.get('claims', []))} claims.")
-    research = verify_research_claims(topic, research, niche_config)
+    verification_inputs = {"topic": topic, "research": research, "research_prompt": niche_config.get("research_prompt")}
+    research = _cached_job_stage(
+        out, "verification", verification_inputs, "research.json",
+        lambda: verify_research_claims(topic, research, niche_config),
+    )
     verified_count = len(research.get("verified_claims", []))
     _progress(f"Research verification complete: {verified_count} claims passed or were qualified.")
+
     _progress("Script 3/5: writing the documentary and complete short-form story.")
-    script = write_script(topic, channel, research, niche_config)
+    script_inputs = {"topic": topic, "channel": channel, "verified_research": research,
+                     "system_prompt": niche_config.get("system_prompt"),
+                     "retention_guidance": niche_config.get("retention_guidance"),
+                     "narration_direction": niche_config.get("narration_direction")}
+    script = _cached_job_stage(
+        out, "scripting", script_inputs, "script.json",
+        lambda: write_script(topic, channel, research, niche_config),
+    )
     _progress(f"Script complete: {script.get('approx_word_count', 0)} estimated narration words.")
+
     _progress("Assets 4/5: preparing scene-specific visual, music, and sound-effect requests.")
     asset_manifest = asset_research(script, out)
     if _RUN_PROGRESS is not None:
@@ -1014,11 +1066,13 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
         if result.get("status") == "captured":
             asset["local_path"] = result["image_path"]
     _write(out / "asset_requests.json", asset_manifest)
+
     _progress("Packaging 5/5: generating titles, description, tags, and thumbnail concepts.")
-    metadata = make_metadata(topic, channel, script)
-    _write(out / "research.json", research)
-    _write(out / "script.json", script)
-    _write(out / "metadata_ab_test.json", metadata)
+    metadata_inputs = {"topic": topic, "channel": channel, "script": script}
+    metadata = _cached_job_stage(
+        out, "metadata", metadata_inputs, "metadata_ab_test.json",
+        lambda: make_metadata(topic, channel, script),
+    )
     job_record = {"job_id": job_id, "channel": channel, "channel_id": channel.get("channel_id"),
                   "visual_brand": channel.get("visual_brand", {}), "topic": topic, "status": "preproduction_ready",
                   "research_file": "research.json", "script_file": "script.json", "asset_manifest": "asset_requests.json",
@@ -1035,10 +1089,7 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
             reference = resolve_thumbnail_reference(subject, subject_type, base_dir / "assets")
             if reference:
                 try:
-                    create_thumbnail_from_reference(
-                        reference, concept, out / "thumbnail_1.png",
-                        channel.get("visual_brand", {}),
-                    )
+                    create_thumbnail_from_reference(reference, concept, out / "thumbnail_1.png", channel.get("visual_brand", {}))
                     reference_record = {
                         "status": "ready", "subject": subject, "subject_type": subject_type,
                         "recognition_cues": concept.get("recognition_cues", ""),
@@ -1064,7 +1115,6 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
         _write(out / "thumbnail_reference.json", reference_record)
     _write(out / "job.json", job_record)
     return out
-
 
 def qa_package(job_dir: Path, final_files: list[Path] | None = None) -> list[str]:
     errors = []
