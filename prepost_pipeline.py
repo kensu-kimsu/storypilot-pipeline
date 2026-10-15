@@ -1002,14 +1002,28 @@ def create_thumbnail_from_reference(reference: dict, concept: dict, path: Path,
 
 
 def _cached_job_stage(out: Path, stage: str, inputs: Any, filename: str, producer) -> Any:
-    """Load a completed stage when its exact inputs match; otherwise run and checkpoint it."""
-    stage_sig = stage_signature({"cache_version": 1, "stage": stage, "inputs": inputs})
+    """Load a completed stage when its exact inputs and model match."""
+    stage_sig = stage_signature({
+        "cache_version": 2, "stage": stage, "model": resolve_model(stage),
+        "fallback_model": os.getenv(f"OPENAI_MODEL_{stage.upper()}_FALLBACK", ""),
+        "inputs": inputs,
+    })
     cached = load_checkpoint(out, stage, stage_sig, filename)
     if cached is not None:
         _progress(f"Resume: reusing cached {stage} result.")
         return cached
     result = producer()
-    save_checkpoint(out, stage, stage_sig, filename, result)
+    cacheable = True
+    if stage == "research":
+        cacheable = bool(result.get("claims"))
+    elif stage == "verification":
+        cacheable = result.get("verification_summary", {}).get("status") == "passed"
+    elif stage == "scripting":
+        cacheable = not result.get("unsupported_claim_ids") and bool(result.get("target_met_estimate"))
+    if cacheable:
+        save_checkpoint(out, stage, stage_sig, filename, result)
+    else:
+        _progress(f"Checkpoint skipped: {stage} output did not pass its quality checks.")
     return result
 
 
