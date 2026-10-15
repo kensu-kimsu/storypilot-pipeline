@@ -141,6 +141,48 @@ class MediaLibraryTests(unittest.TestCase):
             candidates = library._nasa_candidates("Apollo", "picture", 1)
             self.assertEqual(candidates[0]["download_url"], "https://images-assets.nasa.gov/image/apollo-1/apollo-1~orig")
 
+    def test_asset_request_cache_reuses_selected_clip_without_reanalysis(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {}, clear=True):
+            library = MediaLibrary(Path(temp) / "assets")
+            library.find_reusable = lambda *_args, **_kwargs: []
+            library.download_pixabay = MagicMock(return_value=[])
+            library.download_public_archives = MagicMock(return_value=[])
+            candidate = {"source": "youtube", "url": "https://www.youtube.com/watch?v=cachetest", "title": "Factory"}
+            selected = library._register(
+                b"cached selected excerpt", category="video", title="Active factory machines",
+                tags=["active", "factory", "machines"], source="youtube",
+                source_url=candidate["url"], ext=".mp4",
+                metadata={"segment_start_seconds": 2.0, "segment_end_seconds": 7.0},
+            )
+            download = MagicMock(return_value=selected)
+            library.download_social_candidate = download
+            manifest = {"assets": [{
+                "asset_id": "v1", "category": "video", "query": "active factory machines",
+                "purpose": "Show production lines", "candidates": [candidate],
+            }]}
+            first = acquire_asset_requests(manifest, library)
+            second = acquire_asset_requests(manifest, library)
+            self.assertEqual(first["assets"][0]["selected"]["path"], second["assets"][0]["selected"]["path"])
+            self.assertEqual(second["assets"][0]["status"], "reused_cached_selection")
+            download.assert_called_once()
+
+    def test_paid_image_fallback_requires_creative_director_flag(self):
+        with tempfile.TemporaryDirectory() as temp:
+            library = MediaLibrary(Path(temp) / "assets")
+            library.find_reusable = lambda *_args, **_kwargs: []
+            library.download_pixabay = lambda *_args, **_kwargs: []
+            library.download_public_archives = lambda *_args, **_kwargs: []
+            library.generate_image = MagicMock(return_value={"asset_id": "generated", "path": "generated.png", "source": "openai_image"})
+            acquire_asset_requests({"assets": [{
+                "asset_id": "p1", "category": "picture", "query": "a metaphorical scene",
+            }]}, library)
+            library.generate_image.assert_not_called()
+            acquire_asset_requests({"assets": [{
+                "asset_id": "p2", "category": "picture", "query": "custom illustration",
+                "generated_media_required": True,
+            }]}, library)
+            library.generate_image.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
