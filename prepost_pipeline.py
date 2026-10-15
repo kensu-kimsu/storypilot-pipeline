@@ -601,17 +601,31 @@ def _capture_headline(candidate: dict, keywords: list[str], image_path: Path) ->
             highlight_location = "headline"
             target = headline
             if not matched_text:
-                paragraphs = page.locator("article p, main p")
-                for index in range(min(paragraphs.count(), 16)):
+                # Publishers vary their article markup. Search all rendered
+                # paragraphs (not only <article>/<main>) so the result does
+                # not depend on a site's particular layout or ad wrappers.
+                paragraphs = page.locator("p")
+                for index in range(min(paragraphs.count(), 100)):
                     paragraph = paragraphs.nth(index)
                     text = " ".join(paragraph.inner_text().split())
                     matched_text = _matched_keyword_text(text, keywords)
                     if matched_text:
                         target = paragraph
-                        highlight_location = "lead_paragraph"
+                        highlight_location = "article_paragraph"
                         break
             if not matched_text:
-                raise ValueError("Requested keyword was not present in the article headline or lead paragraphs")
+                page_text = " ".join(page.locator("body").inner_text().split())
+                excerpts = []
+                for keyword in keywords:
+                    # Include context from the rendered page in the error log
+                    # when the term is present but not inside a paragraph.
+                    match = _keyword_match_pattern(keyword).search(page_text)
+                    if match:
+                        excerpts.append(page_text[max(0, match.start() - 100):match.end() + 160])
+                detail = f"Requested keyword not found in headline or article paragraphs. Visible headline: {actual_headline!r}; page URL: {page.url}; paragraphs checked: {min(paragraphs.count(), 100)}."
+                if excerpts:
+                    detail += f" It does appear elsewhere in page text: {excerpts[0]!r}."
+                raise ValueError(detail)
             result = target.evaluate(
                 """(el, words) => {
                   const terms = words.filter(Boolean).sort((a, b) => b.length - a.length);
@@ -704,6 +718,7 @@ def fulfill_news_headline_requests(topic: str, script: dict, assets_root: Path, 
                 record.update(status="not_found", error="No matching article found from the approved news publishers")
                 records.append(record)
                 continue
+            record.update(article)
             filename = f"{_slug(topic)[:35]}_{_slug(article['publisher'])[:24]}_{_slug(article['headline'])[:50]}.png"
             image_path = output_dir / filename
             captured = _capture_headline(article, request["highlight_keywords"], image_path)
