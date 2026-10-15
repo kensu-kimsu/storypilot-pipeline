@@ -27,7 +27,7 @@ try:
 except ImportError:  # pure local QA helpers remain importable without API extras
     requests = None
 
-from cost_controls import load_checkpoint, record_openai_usage, resolve_model, save_checkpoint, signature as stage_signature
+from cost_controls import fallback_model_env, load_checkpoint, record_openai_usage, resolve_model, save_checkpoint, signature as stage_signature
 
 API_ROOT = "https://api.openai.com/v1"
 YT_ROOT = "https://www.googleapis.com/youtube/v3"
@@ -1005,7 +1005,7 @@ def _cached_job_stage(out: Path, stage: str, inputs: Any, filename: str, produce
     """Load a completed stage when its exact inputs and model match."""
     stage_sig = stage_signature({
         "cache_version": 2, "stage": stage, "model": resolve_model(stage),
-        "fallback_model": os.getenv(f"OPENAI_MODEL_{stage.upper()}_FALLBACK", ""),
+        "fallback_model": os.getenv(fallback_model_env(stage), ""),
         "inputs": inputs,
     })
     cached = load_checkpoint(out, stage, stage_sig, filename)
