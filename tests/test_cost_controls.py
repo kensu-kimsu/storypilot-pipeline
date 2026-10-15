@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cost_controls import (
+    fallback_model_env,
     load_checkpoint,
     record_openai_usage,
     resolve_model,
@@ -23,6 +24,7 @@ class CostControlTests(unittest.TestCase):
             self.assertEqual(resolve_model("metadata"), "gpt-6-luna")
             self.assertEqual(resolve_model("research"), "gpt-6.1-sol")
             self.assertEqual(resolve_model("research", "explicit"), "explicit")
+            self.assertEqual(fallback_model_env("scripting"), "OPENAI_MODEL_SCRIPT_FALLBACK")
 
     def test_checkpoints_reuse_only_matching_inputs(self):
         with tempfile.TemporaryDirectory() as temp:
