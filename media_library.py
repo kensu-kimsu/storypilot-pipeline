@@ -76,6 +76,8 @@ def asset_search_variants(query: str, category: str) -> list[str]:
             (r"gavel|court", ["gavel hit", "courtroom gavel"]),
             (r"calculator|button|click", ["calculator buttons", "button clicks"]),
             (r"shutter|camera", ["camera shutter", "camera click"]),
+            (r"impact|hit|thud|bang|slam", ["cinematic impact", "soft impact sound effect"]),
+            (r"ambience|atmosphere|room tone|wind|rain", ["ambient room tone", "documentary atmosphere"]),
         ]
     elif category == "music":
         rules = [
@@ -89,6 +91,10 @@ def asset_search_variants(query: str, category: str) -> list[str]:
     for pattern, additions in rules:
         if re.search(pattern, original, flags=re.I):
             variants.extend(additions)
+    # These concise phrases are reliable cross-scene fallback searches. They
+    # also make the first downloaded CC0 assets reusable for later scenes.
+    if category == "music":
+        variants.extend(["documentary ambient music", "cinematic underscore"])
     result, seen = [], set()
     for item in variants:
         item = re.sub(r"\s+", " ", item).strip(" ,.-")[:100]
@@ -140,6 +146,7 @@ class MediaLibrary:
         self.public_cache = root / ".public_search_cache"
         self.public_cache.mkdir(parents=True, exist_ok=True)
         self.request_cache_path = root / ".asset_request_cache.json"
+        self.freesound_search_cache: dict[tuple[str, str], list[dict]] = {}
         self.pixabay_searches_this_run = 0
         self.public_searches_this_run = 0
         with _database(self.db) as conn:
@@ -554,6 +561,9 @@ class MediaLibrary:
         """Search Freesound and cache MP3 previews; original downloads need OAuth."""
         if category not in {"music", "sfx"}:
             raise ValueError("Freesound adapter supports music and sfx categories")
+        cache_key = (category, query.strip().casefold())
+        if cache_key in self.freesound_search_cache:
+            return list(self.freesound_search_cache[cache_key])
         token = os.getenv("FREESOUND_API_KEY")
         if not token:
             return []
@@ -580,7 +590,8 @@ class MediaLibrary:
                 license_name=hit.get("license"), creator=hit.get("username"), duration=hit.get("duration"),
                 ext=".mp3", metadata={"provider_id": hit.get("id"), "query": query, "preview_url": preview,
                     "original_download_requires_oauth": True, "license_filter": "Creative Commons 0"}))
-        return saved
+        self.freesound_search_cache[cache_key] = saved
+        return list(saved)
 
     def generate_image(self, prompt: str, title: str, tags: list[str] | None = None) -> dict | None:
         """Generate and cache a still visual through OpenAI Images API."""
@@ -800,13 +811,19 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
                                 "matched_query": variant}
                     break
             if not selected and os.getenv("FREESOUND_API_KEY"):
-                for variant in search_variants[:4]:
+                # Prefer semantically specific queries, then use concise
+                # fallbacks. Reusable assets found for earlier scenes are
+                # selected from the shared local catalog before another call.
+                for variant in search_variants[:6]:
                     if progress_callback:
                         progress_callback(index, total, f"Asset {index}/{total}: Freesound — {variant[:28]}")
                     try:
                         audio = library.download_freesound_preview(variant, category=category, limit=per_request)
                     except Exception as exc:
-                        print(f"[StoryPilot] Freesound search failed ({type(exc).__name__}); trying another phrase.", flush=True)
+                        response = getattr(exc, "response", None)
+                        status_code = getattr(response, "status_code", None)
+                        detail = f"HTTP {status_code}" if status_code else type(exc).__name__
+                        print(f"[StoryPilot] Freesound search failed ({detail}); trying another phrase.", flush=True)
                         audio = []
                     if audio:
                         selected = {**audio[0], "category": category, "matched_query": variant}
