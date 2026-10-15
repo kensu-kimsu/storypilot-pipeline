@@ -809,46 +809,175 @@ def search_asset_sources(ledger_path: Path, *, max_results: int = 3) -> dict:
 def make_metadata(topic: str, channel: dict, script: dict) -> dict:
     prompt = f"""Create truthful YouTube packaging for this documentary. No unsupported promise, false urgency, or claim beyond the verified story.
 Topic: {topic}; channel: {channel.get('name', channel.get('handle'))}.
-Script summary: {script.get('logline')}\nReturn strict JSON {{"title_variants":[{{"title":"...","hypothesis":"..."}} x 3],"description":"...","tags":["..."],"thumbnail_briefs":[{{"subject":"specific recognizable person, brand, or company from this story","subject_type":"person|brand|company","recognition_cues":"distinctive verified appearance, product, colors, or logo","concept":"...","composition":"...","text":"optional, 0-3 words","contrast_angle":"..."}}]}} with exactly ONE thumbnail brief. Choose a recognizable named person, brand, or company central to the story as the main focal subject. Do not substitute a generic silhouette if an actual subject is identifiable from the topic and script. Keep title variants distinct hypotheses. The thumbnail should read on a phone and create a truthful curiosity gap without repeating the title."""
+Script summary: {script.get('logline')}\nReturn strict JSON {{"title_variants":[{{"title":"...","hypothesis":"..."}} x 3],"description":"...","tags":["..."],"thumbnail_briefs":[{{"subject":"specific recognizable person, brand, or company from this story","subject_type":"person|brand|company","recognition_cues":"distinctive verified appearance, product, colors, or logo","concept":"...","composition":"...","text":"2-3 word curiosity hook, not the title","contrast_angle":"..."}}]}} with exactly ONE thumbnail brief. Choose a recognizable named person, brand, or company central to the story as the main focal subject. Do not substitute a generic silhouette if an actual subject is identifiable from the topic and script. The actual source image will be placed in the thumbnail directly, so select a subject that can be found in Wikimedia Commons or another public image archive. Keep title variants distinct hypotheses. The thumbnail should read on a phone and create a truthful curiosity gap without repeating the title."""
     data = parse_json_text(response_text(openai_response(prompt)))
     data["thumbnail_briefs"] = data.get("thumbnail_briefs", [])[:1]
     data["testing_note"] = "For native YouTube test, use YouTube Studio's concurrent test when available. Do not sequentially swap manually and call it a controlled A/B test. API support for starting the native experiment is not assumed."
     return data
 
 
-def build_thumbnail_prompt(topic: str, concept: dict) -> str:
-    """Turn the thumbnail brief into a simple, factual, phone-readable image prompt."""
-    subject = concept.get("subject", topic)
-    subject_type = concept.get("subject_type", "person, brand, or company")
-    return f"""Create one high-CTR YouTube documentary thumbnail about: {topic}.
-Recognizable main subject: {subject} ({subject_type}).
-Verified recognition cues: {concept.get('recognition_cues', '')}
-Story idea: {concept.get('concept', '')}
-Composition direction: {concept.get('composition', '')}
-Curiosity angle: {concept.get('contrast_angle', '')}
-Visual blueprint: use exactly three clear elements at most—(1) one large, unmistakable, recognizable main subject, (2) one atmospheric context background, and (3) at most one story clue or mystery object. Render the named person, brand, or company as the dominant focal subject, using its verified distinctive appearance, product, colors, or logo when supplied. Do not replace it with a generic silhouette. For a real person, make a respectful, recognizable likeness; do not depict them doing anything unsupported by the story. For a company or brand, use its correct identity and do not invent or misspell a logo. Make the subject dominant and readable at phone size, with strong light-dark contrast, cinematic directional or rim lighting, restrained color accents, subtle depth, and a gentle vignette. Keep the subject inside the central 16:9 crop-safe area; leave uncluttered negative space for optional short overlay text ({concept.get('text', '')}) but do not render any words or letters. Use a low-detail background. The image must fit the verified story and must not invent evidence, events, statistics, headlines, or misleading actions. No collage, no extra props, no tiny details, no watermark. Compose for a 16:9 YouTube thumbnail; the supplied image will be center-cropped to 16:9."""
+def resolve_thumbnail_reference(subject: str, subject_type: str, assets_dir: Path) -> dict | None:
+    """Find or download a real subject image from keyless public image sources."""
+    from media_library import MediaLibrary
+
+    subject = str(subject or "").strip()
+    if not subject:
+        return None
+    library = MediaLibrary(assets_dir)
+    descriptor = "portrait" if str(subject_type).lower() == "person" else "logo"
+    terms = {
+        word for word in re.findall(r"[a-z0-9]+", subject.lower())
+        if len(word) > 1 and word not in {"inc", "ltd", "limited", "corp", "corporation", "company", "group", "plc"}
+    }
+    if not terms:
+        terms = set(re.findall(r"[a-z0-9]+", subject.lower()))
+
+    def rank(asset: dict) -> tuple[float, int]:
+        metadata = asset.get("metadata") or {}
+        title = str(asset.get("title") or metadata.get("title") or "")
+        description = str(metadata.get("description") or metadata.get("ImageDescription") or "")
+        # Do not count search-query tags as proof that the file depicts the subject.
+        haystack = f"{title} {description} {asset.get('creator', '')}".lower()
+        words = set(re.findall(r"[a-z0-9]+", haystack))
+        score = len(terms & words) / max(1, len(terms))
+        if subject.lower() in haystack:
+            score = max(score, 1.0)
+        path = Path(str(asset.get("path", "")))
+        real_source = asset.get("source") in {
+            "wikimedia_commons", "internet_archive", "library_of_congress", "nasa_images", "pixabay",
+        }
+        if not real_source or not path.is_file():
+            score = 0.0
+        # Prefer a Commons photo/logo when relevance scores are tied.
+        source_rank = 1 if asset.get("source") == "wikimedia_commons" else 0
+        return score, source_rank
+
+    def choose(rows: list[dict]) -> dict | None:
+        usable = [(rank(row), row) for row in rows]
+        usable = [(score, row) for score, row in usable if score[0] >= 0.5]
+        if not usable:
+            return None
+        (score, _), row = max(usable, key=lambda item: item[0])
+        metadata = row.get("metadata") or {}
+        return {**row, "title": row.get("title") or metadata.get("title", ""),
+                "subject_match_score": round(score, 3), "reference_query": subject}
+
+    reused = choose(library.find_reusable(subject, category="picture", limit=20))
+    if reused:
+        return reused
+
+    query = f"{subject} {descriptor}"
+    try:
+        downloaded = library.download_public_archives(query, category="picture", limit=5)
+    except Exception as exc:
+        _progress(f"Thumbnail reference search failed ({type(exc).__name__}).")
+        return None
+    selected = choose(downloaded)
+    if selected:
+        selected["reference_query"] = query
+    return selected
 
 
-def generate_thumbnail(prompt: str, path: Path, *, size: str = "1536x1024") -> bool:
-    """Generate one image and center-crop it to a standard 1280x720 thumbnail."""
-    key = os.environ.get("OPENAI_API_KEY")
-    if not key:
-        return False
-    _require_requests()
-    response = HTTP.post(f"{API_ROOT}/images/generations", headers={"Authorization": f"Bearer {key}"}, json={"model": os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-1"), "prompt": prompt, "size": size, "quality": "high", "n": 1}, timeout=300)
-    response.raise_for_status()
-    import base64
-    from io import BytesIO
-    from PIL import Image, ImageOps
-    image_bytes = base64.b64decode(response.json()["data"][0]["b64_json"])
-    with Image.open(BytesIO(image_bytes)) as image:
-        thumbnail = ImageOps.fit(
-            image.convert("RGB"), (1280, 720),
-            method=Image.Resampling.LANCZOS, centering=(0.5, 0.5),
+def _thumbnail_font(size: int):
+    from PIL import ImageFont
+
+    candidates = [
+        "C:/Windows/Fonts/impact.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+    ]
+    for font_path in candidates:
+        try:
+            return ImageFont.truetype(font_path, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def create_thumbnail_from_reference(reference: dict, concept: dict, path: Path,
+                                     visual_brand: dict | None = None) -> None:
+    """Compose a 1280x720 thumbnail around the downloaded real subject image.
+
+    This intentionally uses Pillow instead of a paid image-generation endpoint:
+    the subject's source pixels remain intact and recognizable.
+    """
+    from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
+
+    source_path = Path(reference["path"])
+    with Image.open(source_path) as opened:
+        source = ImageOps.exif_transpose(opened).convert("RGBA")
+    width, height = 1280, 720
+    background = ImageOps.fit(
+        source.convert("RGB"), (width, height),
+        method=Image.Resampling.LANCZOS, centering=(0.5, 0.4),
+    ).filter(ImageFilter.GaussianBlur(28))
+    background = ImageEnhance.Brightness(background).enhance(0.28).convert("RGBA")
+    overlay = Image.new("RGBA", (width, height), (5, 8, 14, 88))
+    canvas = Image.alpha_composite(background, overlay)
+
+    brand = visual_brand or {}
+    accent = str(brand.get("brand_accent", "#FFD34E"))
+    subject_type = str(concept.get("subject_type", "person")).lower()
+    title = str(reference.get("title", "")).lower()
+    is_logo = subject_type in {"brand", "company"} and "logo" in title
+    left, top, box_w, box_h = 38, 38, 735, 644
+    if is_logo:
+        card = Image.new("RGBA", (box_w, box_h), (245, 245, 240, 255))
+        logo = ImageOps.contain(source, (box_w - 70, box_h - 70), method=Image.Resampling.LANCZOS)
+        card.alpha_composite(logo, ((box_w - logo.width) // 2, (box_h - logo.height) // 2))
+    else:
+        photo = ImageOps.fit(
+            source.convert("RGB"), (box_w, box_h),
+            method=Image.Resampling.LANCZOS, centering=(0.5, 0.36 if subject_type == "person" else 0.5),
         )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        thumbnail.save(path, format="PNG")
-    return True
+        card = photo.convert("RGBA")
+
+    # A small dark shadow and a bright edge separate the authentic source photo
+    # from the atmospheric background without changing the person's appearance.
+    shadow = Image.new("RGBA", (box_w + 24, box_h + 24), (0, 0, 0, 0))
+    shadow_draw = ImageDraw.Draw(shadow)
+    shadow_draw.rectangle((12, 12, box_w + 11, box_h + 11), fill=(0, 0, 0, 170))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(12))
+    canvas.alpha_composite(shadow, (left - 8, top - 4))
+    canvas.alpha_composite(card, (left, top))
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle((left, top, left + box_w - 1, top + box_h - 1), outline=accent, width=5)
+
+    # The right-side copy is the one story clue; it is real typography rendered
+    # locally, so it stays crisp and does not depend on image-model text.
+    draw.rectangle((812, 92, 1210, 101), fill=accent)
+    phrase = " ".join(str(concept.get("text", "")).split()[:3]).strip()
+    if phrase:
+        lines: list[str] = []
+        current = ""
+        test_draw = ImageDraw.Draw(canvas)
+        font_size = 100
+        while font_size >= 50:
+            font = _thumbnail_font(font_size)
+            lines = []
+            current = ""
+            for word in phrase.split():
+                candidate = (current + " " + word).strip()
+                if current and test_draw.textbbox((0, 0), candidate, font=font, stroke_width=2)[2] > 400:
+                    lines.append(current)
+                    current = word
+                else:
+                    current = candidate
+            if current:
+                lines.append(current)
+            if len(lines) <= 3 and max(test_draw.textbbox((0, 0), line, font=font, stroke_width=2)[2] for line in lines) <= 400:
+                break
+            font_size -= 6
+        y = 235 if len(lines) <= 2 else 180
+        for line in lines:
+            draw.text((812, y), line, font=font, fill="#FFFFFF",
+                      stroke_width=5, stroke_fill="#07090D")
+            y += font_size + 12
+        draw.rectangle((812, min(y + 16, 640), 1000, min(y + 22, 646)), fill=accent)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.convert("RGB").save(path, format="PNG")
 
 
 def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnails: bool = False,
@@ -890,16 +1019,50 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
     _write(out / "research.json", research)
     _write(out / "script.json", script)
     _write(out / "metadata_ab_test.json", metadata)
-    _write(out / "job.json", {"job_id": job_id, "channel": channel, "channel_id": channel.get("channel_id"),
-                                 "visual_brand": channel.get("visual_brand", {}), "topic": topic, "status": "preproduction_ready",
-                                 "research_file": "research.json", "script_file": "script.json", "asset_manifest": "asset_requests.json",
-                                 "metadata_file": "metadata_ab_test.json", "human_polish_required": False})
+    job_record = {"job_id": job_id, "channel": channel, "channel_id": channel.get("channel_id"),
+                  "visual_brand": channel.get("visual_brand", {}), "topic": topic, "status": "preproduction_ready",
+                  "research_file": "research.json", "script_file": "script.json", "asset_manifest": "asset_requests.json",
+                  "metadata_file": "metadata_ab_test.json", "human_polish_required": False,
+                  "thumbnail_requested": bool(generate_thumbnails)}
     if generate_thumbnails:
         concepts = metadata.get("thumbnail_briefs", [])[:1]
+        reference_record = {"status": "missing", "message": "No thumbnail subject brief was returned."}
         if concepts:
-            _progress("Thumbnail 1/1: generating the episode thumbnail; this can take several minutes.")
-            image_prompt = build_thumbnail_prompt(topic, concepts[0])
-            generate_thumbnail(image_prompt, out / "thumbnail_1.png")
+            concept = concepts[0]
+            subject = str(concept.get("subject", "")).strip()
+            subject_type = str(concept.get("subject_type", "person")).strip().lower()
+            _progress(f"Thumbnail reference: searching keyless public archives for {subject or 'the named subject'}.")
+            reference = resolve_thumbnail_reference(subject, subject_type, base_dir / "assets")
+            if reference:
+                try:
+                    create_thumbnail_from_reference(
+                        reference, concept, out / "thumbnail_1.png",
+                        channel.get("visual_brand", {}),
+                    )
+                    reference_record = {
+                        "status": "ready", "subject": subject, "subject_type": subject_type,
+                        "recognition_cues": concept.get("recognition_cues", ""),
+                        "image_path": reference.get("path"), "asset_id": reference.get("asset_id"),
+                        "source": reference.get("source"), "source_url": reference.get("source_url"),
+                        "license": reference.get("license"), "creator": reference.get("creator"),
+                        "match_score": reference.get("subject_match_score"),
+                        "composition_method": "local Pillow composition using the downloaded source image directly",
+                    }
+                    job_record["thumbnail_status"] = "ready"
+                    _progress("Thumbnail 1/1: composed locally from the real subject image.")
+                except Exception as exc:
+                    reference_record = {"status": "composition_failed", "subject": subject,
+                                        "subject_type": subject_type, "message": f"{type(exc).__name__}: {exc}"}
+                    job_record["thumbnail_status"] = "failed"
+                    _progress(f"Thumbnail composition failed ({type(exc).__name__}).")
+            else:
+                reference_record = {"status": "subject_image_not_found", "subject": subject,
+                                    "subject_type": subject_type,
+                                    "message": "No sufficiently relevant real image was found in the public image sources; no synthetic substitute was created."}
+                job_record["thumbnail_status"] = "missing_reference"
+                _progress(f"No reliable public image found for {subject or 'the requested subject'}; thumbnail was not fabricated.")
+        _write(out / "thumbnail_reference.json", reference_record)
+    _write(out / "job.json", job_record)
     return out
 
 
@@ -909,6 +1072,19 @@ def qa_package(job_dir: Path, final_files: list[Path] | None = None) -> list[str
     for name in required:
         if not (job_dir / name).exists():
             errors.append(f"Missing {name}")
+    job_record = _json(job_dir / "job.json", {})
+    if job_record.get("thumbnail_requested"):
+        thumbnail_path = job_dir / "thumbnail_1.png"
+        reference = _json(job_dir / "thumbnail_reference.json", {})
+        if not thumbnail_path.is_file():
+            errors.append("Requested thumbnail is missing")
+        if reference.get("status") != "ready":
+            errors.append(f"Thumbnail reference is not ready: {reference.get('status', 'missing')}")
+        reference_path = Path(reference.get("image_path", "")) if reference.get("image_path") else None
+        if not reference_path or not reference_path.is_file():
+            errors.append("Thumbnail reference image file is missing")
+        if reference.get("source") not in {"wikimedia_commons", "internet_archive", "library_of_congress", "nasa_images", "pixabay"}:
+            errors.append("Thumbnail does not use a real downloaded source image")
     script = _json(job_dir / "script.json", {})
     if script.get("unsupported_claim_ids"):
         errors.append("Script references claim IDs absent from research ledger")
