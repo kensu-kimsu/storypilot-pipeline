@@ -809,14 +809,24 @@ def search_asset_sources(ledger_path: Path, *, max_results: int = 3) -> dict:
 def make_metadata(topic: str, channel: dict, script: dict) -> dict:
     prompt = f"""Create truthful YouTube packaging for this documentary. No unsupported promise, false urgency, or claim beyond the script.
 Topic: {topic}; channel: {channel.get('name', channel.get('handle'))}.
-Script summary: {script.get('logline')}\nReturn strict JSON {{"title_variants":[{{"title":"...","hypothesis":"..."}} x 3],"description":"...","tags":["..."],"thumbnail_briefs":[{{"concept":"...","composition":"...","text":"2-4 words","contrast_angle":"..."}} x 2]}}. Keep titles distinct hypotheses; thumbnails readable at mobile size."""
+Script summary: {script.get('logline')}\nReturn strict JSON {{"title_variants":[{{"title":"...","hypothesis":"..."}} x 3],"description":"...","tags":["..."],"thumbnail_briefs":[{{"concept":"...","composition":"...","text":"optional, 0-3 words","contrast_angle":"..."}}]}} with exactly ONE thumbnail brief. Keep title variants distinct hypotheses. The thumbnail should make the story legible at phone size and create a truthful curiosity gap without repeating the title."""
     data = parse_json_text(response_text(openai_response(prompt)))
+    data["thumbnail_briefs"] = data.get("thumbnail_briefs", [])[:1]
     data["testing_note"] = "For native YouTube test, use YouTube Studio's concurrent test when available. Do not sequentially swap manually and call it a controlled A/B test. API support for starting the native experiment is not assumed."
     return data
 
 
+def build_thumbnail_prompt(topic: str, concept: dict) -> str:
+    """Turn the thumbnail brief into a simple, factual, phone-readable image prompt."""
+    return f"""Create one high-CTR YouTube documentary thumbnail about: {topic}.
+Story idea: {concept.get('concept', '')}
+Composition direction: {concept.get('composition', '')}
+Curiosity angle: {concept.get('contrast_angle', '')}
+Visual blueprint: use exactly three clear elements at most—(1) one large, unmistakable focal subject, (2) one atmospheric context background, and (3) at most one story clue or mystery object. Make the subject dominant and readable at phone size, with strong light-dark contrast, cinematic directional or rim lighting, restrained color accents, subtle depth, and a gentle vignette. Keep the focal subject inside the central 16:9 crop-safe area; leave uncluttered negative space for optional short overlay text ({concept.get('text', '')}) but do not render any words or letters. Use a low-detail background. The image must fit the verified story and must not invent evidence, events, statistics, headlines, logos, or realistic depictions of real people. Prefer a symbolic object or neutral silhouette when a real person is not essential. No collage, no extra props, no tiny details, no watermark. Compose for a 16:9 YouTube thumbnail; the supplied image will be center-cropped to 16:9."""
+
+
 def generate_thumbnail(prompt: str, path: Path, *, size: str = "1536x1024") -> bool:
-    """Optional OpenAI image generation; output requires crop/layout QA at 16:9."""
+    """Generate one image and center-crop it to a standard 1280x720 thumbnail."""
     key = os.environ.get("OPENAI_API_KEY")
     if not key:
         return False
@@ -824,8 +834,16 @@ def generate_thumbnail(prompt: str, path: Path, *, size: str = "1536x1024") -> b
     response = HTTP.post(f"{API_ROOT}/images/generations", headers={"Authorization": f"Bearer {key}"}, json={"model": os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-1"), "prompt": prompt, "size": size, "quality": "high", "n": 1}, timeout=300)
     response.raise_for_status()
     import base64
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(base64.b64decode(response.json()["data"][0]["b64_json"]))
+    from io import BytesIO
+    from PIL import Image, ImageOps
+    image_bytes = base64.b64decode(response.json()["data"][0]["b64_json"])
+    with Image.open(BytesIO(image_bytes)) as image:
+        thumbnail = ImageOps.fit(
+            image.convert("RGB"), (1280, 720),
+            method=Image.Resampling.LANCZOS, centering=(0.5, 0.5),
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        thumbnail.save(path, format="PNG")
     return True
 
 
@@ -848,7 +866,7 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
     asset_manifest = asset_research(script, out)
     if _RUN_PROGRESS is not None:
         visual_count = sum(asset.get("category") in {"picture", "video"} for asset in asset_manifest.get("assets", []))
-        thumbnail_count = 2 if generate_thumbnails else 0
+        thumbnail_count = 1 if generate_thumbnails else 0
         _RUN_PROGRESS.set_estimate(480 + visual_count * 45 + thumbnail_count * 120)
     screenshot_requests = _article_screenshot_requests(script)
     if screenshot_requests:
@@ -873,11 +891,11 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
                                  "research_file": "research.json", "script_file": "script.json", "asset_manifest": "asset_requests.json",
                                  "metadata_file": "metadata_ab_test.json", "human_polish_required": False})
     if generate_thumbnails:
-        concepts = metadata.get("thumbnail_briefs", [])[:2]
-        for index, concept in enumerate(concepts, 1):
-            _progress(f"Thumbnail {index}/{len(concepts)}: generating image; this can take several minutes.")
-            image_prompt = f"YouTube documentary thumbnail, 16:9 composition, high contrast, topic: {topic}. {concept.get('composition','')}. Visual idea: {concept.get('concept','')}. Leave clear negative space for short text: {concept.get('text','')}. Avoid logos and tiny text."
-            generate_thumbnail(image_prompt, out / f"thumbnail_{index}.png")
+        concepts = metadata.get("thumbnail_briefs", [])[:1]
+        if concepts:
+            _progress("Thumbnail 1/1: generating the episode thumbnail; this can take several minutes.")
+            image_prompt = build_thumbnail_prompt(topic, concepts[0])
+            generate_thumbnail(image_prompt, out / "thumbnail_1.png")
     return out
 
 
