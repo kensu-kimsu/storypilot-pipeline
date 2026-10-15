@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import random
 import re
 import shutil
@@ -686,6 +687,8 @@ def _save_style_history(path: Path, history: list[dict], plan: dict) -> None:
 
 def build_package(job_path: Path, output_dir: Path, style_history_path: Path | None = None) -> dict:
     job = json.loads(job_path.read_text(encoding="utf-8"))
+    # Keep any OpenAI social-video selection/asset-resolution usage in this job report.
+    os.environ["STORYPILOT_ACTIVE_JOB_DIR"] = str(job_path.resolve().parent)
     prepare_assets_before_edit(job, job_path, output_dir / "edit_readiness.json")
     # Stop on unresolved ids rather than silently creating visual placeholders.
     referenced_ids = {str(asset_id) for segment in job.get("segments", []) for asset_id in segment.get("asset_ids", [])}
