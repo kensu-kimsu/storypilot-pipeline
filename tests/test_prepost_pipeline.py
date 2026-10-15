@@ -9,6 +9,7 @@ from PIL import Image
 
 from prepost_pipeline import (
     _ConsoleProgress,
+    _matched_keyword_text,
     create_thumbnail_from_reference,
     _verified_news_source_for_request,
     make_metadata,
@@ -30,6 +31,11 @@ from prepost_pipeline import (
 
 
 class PrePostPipelineTests(unittest.TestCase):
+    def test_headline_screenshot_keyword_matching_allows_amount_precision(self):
+        text = "VOO attracted $124.4 billion late last week, according to ETF.com."
+        self.assertEqual(_matched_keyword_text(text, ["$124 Billion"]), ["$124.4 billion"])
+        self.assertEqual(_matched_keyword_text(text, ["$125 Billion"]), [])
+
     def test_next_topic_stays_blocked_until_qa_passes(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
