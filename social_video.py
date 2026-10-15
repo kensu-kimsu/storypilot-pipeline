@@ -47,6 +47,17 @@ def supported_social_url(url: str) -> bool:
         return False
 
 
+def _model_for(stage: str) -> str:
+    """Honor stage routing while preserving the older vision-model setting."""
+    if stage == "clip_analysis":
+        if os.getenv("OPENAI_MODEL_CLIP_ANALYSIS", "").strip():
+            return resolve_model(stage)
+        legacy = os.getenv("OPENAI_VISION_MODEL", "").strip()
+        if legacy:
+            return legacy
+    return resolve_model(stage)
+
+
 def _request_session():
     if requests is None:
         raise RuntimeError("Install dependencies with: pip install -r requirements.txt")
@@ -270,7 +281,7 @@ def analyze_clip_moment(video: Path, *, query: str, purpose: str, openai_key: st
     response = req.post("https://api.openai.com/v1/responses", headers={
         "Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
     }, json={
-        "model": resolve_model("clip_analysis", os.getenv("OPENAI_VISION_MODEL")),
+        "model": _model_for("clip_analysis"),
         "input": [{"role": "user", "content": [
             {"type": "input_text", "text": prompt},
             {"type": "input_image", "image_url": f"data:image/jpeg;base64,{encoded}", "detail": "high"},
