@@ -128,3 +128,53 @@ QA checks container/streams, planned duration, minimum length (20 minutes for lo
 | YouTube upload | Not performed; the program has no upload stage |
 
 The final output is a local MP4 and its QA report. Review the report and video, then upload manually when ready.
+
+
+## Cost controls and reruns
+
+At the end of a production run, open the job folder and review
+`cost_report.json`. It breaks usage down by stage: research, verification,
+script, metadata, TikTok search, social candidate ranking, and clip-frame
+analysis. Token counts are recorded even when the configured model is absent
+from the built-in reference rate card. Check current provider pricing before
+using the estimated total as an invoice amount.
+
+When you rerun the same topic with the same channel and prompts, StoryPilot
+reuses valid results for research, independent verification, script writing,
+and metadata. The console prints a `Resume: reusing cached … result` message
+for each reused stage. The cache is stored in `stage_cache.json` alongside
+the output JSON files.
+
+To deliberately rerun a stage, add one or more of these names to the workspace
+`D:\\YouTubeProduction\\.env`:
+
+```dotenv
+STORYPILOT_REFRESH_STAGES=research,verification
+```
+
+Supported names are `research`, `verification`, `scripting`, and
+`metadata`. Use `*` to refresh all. Remove the setting after that run.
+
+The media library remembers the exact selected file for a scene. If it still
+exists, a rerun skips downloading and social-video frame analysis. If you delete
+the selected file, StoryPilot searches again. This cache lives in
+`assets\\.asset_request_cache.json`.
+
+For a lower-cost packaging trial, keep the global model on your tested model
+and set a separate metadata model in the workspace `.env`:
+
+```dotenv
+OPENAI_MODEL_METADATA=gpt-6-luna
+OPENAI_MODEL_METADATA_FALLBACK=gpt-6.1-sol
+```
+
+The model IDs must be enabled for your API account. The fallback is used only
+when the first response is not valid JSON. Run several topics and check titles,
+descriptions, and thumbnail briefs before keeping this override. Keep research,
+verification, and scripting on the model that passes your fact and writing
+quality checks.
+
+Custom image generation is skipped by default. It runs only when the script's
+creative director marks a custom background illustration as required. Missing
+real photos and evidence imagery stay unresolved for source search or QA rather
+than incurring an automatic image-generation charge.
