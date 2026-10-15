@@ -356,7 +356,7 @@ def openai_response(prompt: str, *, web_search: bool = False, model: str | None 
     # Optional fallback runs only when a configured low-risk JSON stage returns
     # malformed JSON. It never silently downgrades research or fact-checking.
     fallback_model = os.getenv(f"OPENAI_MODEL_{stage.upper()}_FALLBACK", "").strip()
-    if fallback_model and stage in {"ideation", "news_search", "social_ranking"}:
+    if fallback_model and stage in {"ideation", "research", "verification", "scripting", "metadata", "news_search", "social_ranking"}:
         try:
             parse_json_text(response_text(data))
         except (json.JSONDecodeError, TypeError, ValueError):
@@ -754,6 +754,7 @@ def asset_research(script: dict, out_dir: Path) -> dict:
                 if query:
                     requests_list.append({"asset_id": f"asset_{len(requests_list)+1:03d}", "query": query,
                         "category": "picture", "segment": i, "parallax_role": role,
+                        "generated_media_required": bool(parallax.get("generated_media_required") is True and role == "parallax_background"),
                         "purpose": "Source image for a layered 2.5D portrait scene; foreground and background must be distinct",
                         "suggested_sources": ["Pixabay API", "Wikimedia Commons (no key)", "Internet Archive (no key)", "official company newsroom", "OpenAI generated image"],
                         "source_url": None, "local_path": None, "rights_status": "unknown", "license_evidence": None, "download_status": "not_downloaded"})
