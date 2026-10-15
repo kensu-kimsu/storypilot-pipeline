@@ -29,32 +29,37 @@ class MediaLibraryTests(unittest.TestCase):
         self.assertIn("sparse piano underscore", variants[:6])
         self.assertIn("documentary ambient music", variants)
 
-    def test_freesound_downloads_cc0_preview_and_caches_search(self):
+    def test_freesound_searches_all_licenses_and_caches_previews(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"FREESOUND_API_KEY": "test-token"}):
             library = MediaLibrary(Path(temp) / "assets")
             search_response = MagicMock()
             search_response.json.return_value = {"results": [
                 {"id": 12, "name": "Paper page turn", "tags": ["paper", "page"],
-                 "username": "soundmaker", "license": "Creative Commons 0", "duration": 1.5,
+                 "username": "soundmaker", "license": "Attribution", "duration": 1.5,
                  "previews": {"preview-hq-mp3": "https://freesound.test/preview.mp3"},
                  "url": "https://freesound.org/s/12/"},
                 {"id": 13, "name": "Nonfree", "license": "Attribution NonCommercial",
-                 "previews": {"preview-hq-mp3": "https://freesound.test/nonfree.mp3"}},
+                 "previews": {"preview-hq-mp3": "https://freesound.test/nonfree.mp3"},
+                 "url": "https://freesound.org/s/13/"},
             ]}
             preview_response = MagicMock()
             preview_response.content = b"mp3 preview"
             preview_response.raise_for_status.return_value = None
+            second_preview_response = MagicMock()
+            second_preview_response.content = b"another mp3 preview"
+            second_preview_response.raise_for_status.return_value = None
             client = MagicMock()
-            client.get.side_effect = [search_response, preview_response]
+            client.get.side_effect = [search_response, preview_response, second_preview_response]
             with patch("media_library._require_requests", return_value=client):
                 first = library.download_freesound_preview("paper page turn", "sfx", limit=2)
                 second = library.download_freesound_preview("paper page turn", "sfx", limit=2)
-            self.assertEqual(len(first), 1)
+            self.assertEqual(len(first), 2)
             self.assertEqual(first[0]["source"], "freesound_preview")
-            self.assertEqual(first[0]["license"], "Creative Commons 0")
+            self.assertEqual(first[0]["license"], "Attribution")
+            self.assertEqual(first[1]["license"], "Attribution NonCommercial")
             self.assertEqual(second[0]["path"], first[0]["path"])
-            self.assertEqual(client.get.call_count, 2)
-            self.assertEqual(client.get.call_args_list[0].kwargs["params"]["filter"], 'license:"Creative Commons 0"')
+            self.assertEqual(client.get.call_count, 3)
+            self.assertNotIn("filter", client.get.call_args_list[0].kwargs["params"])
 
     def test_pixabay_searches_are_cached_and_capped_per_run(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -558,7 +558,7 @@ class MediaLibrary:
             )
 
     def download_freesound_preview(self, query: str, category: str = "sfx", limit: int = 3) -> list[dict]:
-        """Search Freesound and cache MP3 previews; original downloads need OAuth."""
+        """Search all Freesound licenses and cache MP3 previews with license metadata."""
         if category not in {"music", "sfx"}:
             raise ValueError("Freesound adapter supports music and sfx categories")
         cache_key = (category, query.strip().casefold())
@@ -570,16 +570,11 @@ class MediaLibrary:
         req = _require_requests()
         response = req.get("https://freesound.org/apiv2/search/", params={
             "query": query, "token": token, "page_size": min(max(limit, 1), 10),
-            "filter": 'license:"Creative Commons 0"',
             "fields": "id,name,tags,username,license,duration,previews,url",
         }, timeout=30)
         response.raise_for_status()
         saved = []
         for hit in response.json().get("results", [])[:limit]:
-            # Re-check the returned metadata; fail closed if the provider ignored
-            # or changed the filter instead of storing a non-CC0 file.
-            if not _is_cc0_license(hit.get("license")):
-                continue
             preview = hit.get("previews", {}).get("preview-hq-mp3") or hit.get("previews", {}).get("preview-lq-mp3")
             if not preview:
                 continue
@@ -589,7 +584,8 @@ class MediaLibrary:
                 tags=hit.get("tags", []), source="freesound_preview", source_url=hit.get("url", ""),
                 license_name=hit.get("license"), creator=hit.get("username"), duration=hit.get("duration"),
                 ext=".mp3", metadata={"provider_id": hit.get("id"), "query": query, "preview_url": preview,
-                    "original_download_requires_oauth": True, "license_filter": "Creative Commons 0"}))
+                    "original_download_requires_oauth": True, "license_filter": None,
+                    "license_review_required_before_publication": True}))
         self.freesound_search_cache[cache_key] = saved
         return list(saved)
 

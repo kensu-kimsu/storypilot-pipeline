@@ -66,12 +66,12 @@ The command automatically uses `D:\YouTubeProduction\style_history.json` based o
 | TikTok | No TikTok API key; uses `OPENAI_API_KEY` web search | Searches web-indexed public TikTok links for scene candidates. Coverage is limited and does not reproduce TikTok's in-app recommendations. |
 | yt-dlp | Installed from `requirements.txt` | Downloads a selected candidate temporarily. StoryPilot retains only the AI-selected excerpt (muted, up to five seconds) in `assets/video_clips/`. |
 | YouTube Audio Library | No API key | Import tracks that you download yourself into the local `audio_library_seed` folders. |
-| Freesound | Yes, `FREESOUND_API_KEY` | Automatically searches and saves CC0 music/SFX previews; no manual audio downloads are required. Previews are not original-quality downloads. |
+| Freesound | Yes, `FREESOUND_API_KEY` | Automatically searches all available license types for relevant music/SFX previews; no manual audio downloads are required. Previews are not original-quality downloads. |
 | OpenAI image generation | Uses `OPENAI_API_KEY` | Optional illustrative scene stills. Thumbnail generation does not call the image API; it uses a real downloaded subject image and Pillow composition. |
 
 The extra no-key sources are **collection-specific archives**, not a universal Google Images replacement. For a named modern company, its official press/media page is usually the most accurate source. When making a thumbnail, StoryPilot searches for the brief's named person, brand, or company in local reusable pictures and then keyless public archives. It places that real image directly in the thumbnail and records its source, creator, and license in `thumbnail_reference.json`; it does not ask an image model to imitate the subject. Wikimedia's public API does not require an API key, while each file's own license and attribution terms still need to be checked. The program records source URLs, creators, selected timecodes, and available source metadata in the asset catalog. TikTok web search finds indexed links, not every TikTok post; its official Research API is restricted to eligible researchers and is not used by StoryPilot. Downloaded social-video audio is stripped so narration and the local music/SFX mix remain under StoryPilot's control.
 
-Freesound audio acquisition is automatic: the creative director's music/SFX cues are converted into short search phrases, Freesound is queried for CC0 results, previews are downloaded into the workspace, and matching files are cataloged for reuse. The setup does not require you to collect audio files manually. Freesound's API's free tier is for noncommercial use; obtain their commercial-use agreement before using the API for monetized production. That API restriction is separate from the license on an individual audio file.
+Freesound audio acquisition is automatic: the creative director's music/SFX cues are converted into short search phrases, Freesound is searched without a license filter, previews are downloaded into the workspace, and matching files are cataloged for reuse. The catalog records the license and creator, and flags the asset for review before publication. The setup does not require you to collect audio files manually. Freesound's API's free tier is for noncommercial use; obtain their commercial-use agreement before using the API for monetized production. This project setting does not grant rights to use a sound, and API terms are separate from the license on an individual audio file.
 
 ## 1. Install and configure
 
@@ -120,7 +120,7 @@ For macOS/Linux, use a path such as `./production` instead. Key entry is hidden.
 | `OPENAI_API_KEY` | Required for research, script/metadata generation, and optional images. |
 | `YOUTUBE_API_KEY` | Needed for trend/topic discovery and YouTube scene-video search. TikTok web search uses the OpenAI key. |
 | `PIXABAY_API_KEY` | Optional; enter your key to include Pixabay stock candidates/downloads. |
-| `FREESOUND_API_KEY` | Optional; enables automatic CC0-filtered Freesound preview search for music and sound effects. Files are saved into `assets/background_music` or `assets/sfx`, cataloged, and reused for later scenes/jobs when relevant. |
+| `FREESOUND_API_KEY` | Optional; enables automatic Freesound preview search across available licenses for music and sound effects. Files are saved into `assets/background_music` or `assets/sfx`, cataloged with their license/creator details, and reused for later scenes/jobs when relevant. |
 | `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION` | Required only to synthesize narration. Store them in the production workspace `secrets.json` or environment. |
 
 Google result pages are not scraped. Google's policy treats automated queries and scraping of Search results without permission as prohibited machine-generated traffic. OpenAI web search is used to find an article only when the AI creative brief explicitly requests a headline visual.
@@ -220,7 +220,7 @@ D:\YouTubeProduction\audio_library_seed\background_music\
 D:\YouTubeProduction\audio_library_seed\sfx\
 ```
 
-The pipeline does not automatically download from YouTube Audio Library. Freesound is the optional API-backed fallback, using CC0-filtered MP3 previews. Pixabay's documented API searches photos and videos; it is not used here as an audio API. Keep track-specific attribution and rights notes with imported audio.
+The pipeline does not automatically download from YouTube Audio Library. Freesound is the API-backed audio source and searches all available license types for MP3 previews. Pixabay's documented API searches photos and videos; it is not used here as an audio API. Check the license metadata before any public or commercial release.
 
 ## 6. Edit handoff
 
