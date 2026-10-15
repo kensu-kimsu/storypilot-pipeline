@@ -396,3 +396,52 @@ pip install -r requirements-portraits.txt
 - **2.5D portraits:** install `requirements-portraits.txt`. The timed job must set a portrait image as `parallax_foreground_asset_id` and a distinct picture as the shot's `asset_id` background plate. rembg extracts the transparent foreground; FFmpeg moves it separately over the provided background. rembg does not reconstruct the original scene behind a removed subject, so the original image cannot also be the backdrop. First use downloads model weights.
 
 These packages are optional. Install them in the project environment and confirm compatibility with the installed Python version. Tesseract is a separate executable, not a pip package. See the [Cartopy installation guide](https://cartopy.readthedocs.io/v0.26.0/installing.html), [Cartopy map feature guide](https://cartopy.readthedocs.io/latest/matplotlib/feature_interface.html), [pytesseract prerequisites](https://github.com/madmaze/pytesseract#installation), and [rembg usage and model notes](https://github.com/danielgatis/rembg).
+
+
+## Cost controls and safe reruns
+
+StoryPilot records OpenAI token usage and web-search calls in each job's
+`cost_report.json`. The report includes per-stage model, input/output tokens,
+cached tokens, search calls, and an estimated USD total when the model is in the
+reference rate card in `cost_controls.py`. It marks custom or unpriced models
+instead of inventing a charge. Check provider pricing before relying on the
+estimate; update the rate card when prices change. Image-generation events are
+counted separately because their prices depend on the image model and settings.
+
+Preproduction stages are checkpointed in `stage_cache.json`. If the same topic
+and inputs are run again, research, verification, scripting, and metadata are
+reused. A changed topic or changed stage inputs invalidates the relevant cache.
+To force a stage to run again, set `STORYPILOT_REFRESH_STAGES` in
+`D:\\YouTubeProduction\\.env`, for example:
+
+```dotenv
+STORYPILOT_REFRESH_STAGES=research,verification
+```
+
+Clear the setting after the run. Use `*` to refresh all cached stages.
+
+Asset choices are stored in the shared media library's
+`.asset_request_cache.json`. If the selected file still exists, reruns reuse
+that exact clip or image and skip repeated social-video download and frame
+analysis. Deleted files are resolved again.
+
+Optional stage-specific models can be set in the workspace `.env`; blank values
+continue to use the existing `OPENAI_MODEL` setting. To trial the lower-cost
+model for packaging while preserving the main model for research and scripting:
+
+```dotenv
+OPENAI_MODEL=gpt-6.1-sol
+OPENAI_MODEL_METADATA=gpt-6-luna
+OPENAI_MODEL_METADATA_FALLBACK=gpt-6.1-sol
+```
+
+The fallback runs only when a configured JSON stage returns malformed JSON.
+Model names depend on account access. Compare a few metadata outputs before
+keeping the override. Research, independent claim verification, and script
+writing remain on the global model unless you explicitly configure them. The
+pipeline does not remove source verification to save tokens.
+
+OpenAI Images generation is only called for a requested picture asset when the
+creative director explicitly marks `generated_media_required: true` for a
+custom background illustration. The default is false; missing photos and
+evidence documents are not silently replaced with generated imagery.
