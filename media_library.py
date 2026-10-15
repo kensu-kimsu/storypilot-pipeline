@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import quote, urlparse
 
+from cost_controls import record_local_event, signature as request_signature
+
 try:
     import requests
 except ImportError:
@@ -78,6 +80,7 @@ class MediaLibrary:
         self.pixabay_cache.mkdir(parents=True, exist_ok=True)
         self.public_cache = root / ".public_search_cache"
         self.public_cache.mkdir(parents=True, exist_ok=True)
+        self.request_cache_path = root / ".asset_request_cache.json"
         self.pixabay_searches_this_run = 0
         self.public_searches_this_run = 0
         with _database(self.db) as conn:
@@ -88,7 +91,35 @@ class MediaLibrary:
                 created_at TEXT NOT NULL, metadata_json TEXT NOT NULL
             )""")
 
-    def _register(self, data: bytes, *, category: str, title: str, tags: list[str], source: str,
+    def cached_request_selection(self, request_key: str, category: str) -> dict | None:
+        """Reuse a prior scene decision while its selected local file still exists."""
+        try:
+            cache = json.loads(self.request_cache_path.read_text(encoding="utf-8"))
+            selection = cache.get(request_key)
+        except (OSError, json.JSONDecodeError, AttributeError):
+            return None
+        if not isinstance(selection, dict):
+            return None
+        path = Path(str(selection.get("path", "")))
+        selected_category = selection.get("category")
+        if not path.is_file() or (selected_category != category and selection.get("fallback_for") != category):
+            return None
+        if category == "video" and not is_video_asset_path(path):
+            return None
+        return selection
+
+    def cache_request_selection(self, request_key: str, selection: dict) -> None:
+        """Persist the exact chosen asset so reruns do not repeat AI clip analysis."""
+        try:
+            cache = json.loads(self.request_cache_path.read_text(encoding="utf-8")) if self.request_cache_path.is_file() else {}
+        except (OSError, json.JSONDecodeError):
+            cache = {}
+        cache[request_key] = selection
+        temp = self.request_cache_path.with_suffix(".json.tmp")
+        temp.write_text(json.dumps(cache, indent=2, ensure_ascii=False), encoding="utf-8")
+        temp.replace(self.request_cache_path)
+
+    def _register(self, data: bytes, *, category: str, title: str, tags: list[str], source: str,str,
                   source_url: str, license_name: str | None = None, creator: str | None = None,
                   duration: float | None = None, ext: str = ".bin", metadata: dict | None = None) -> dict:
         if category not in FOLDERS:
@@ -481,7 +512,9 @@ class MediaLibrary:
             json={"model": os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1"), "prompt": prompt,
                   "size": "1536x1024", "quality": "high", "n": 1}, timeout=300)
         response.raise_for_status()
-        data = base64.b64decode(response.json()["data"][0]["b64_json"])
+        payload = response.json()
+        record_local_event("image_generation", stage="asset_generation", detail={"model": os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1"), "title": title})
+        data = base64.b64decode(payload["data"][0]["b64_json"])
         return self._register(data, category="generated", title=title, tags=tags or [], source="openai_image",
                               source_url="", license_name="AI-generated; retain provider terms",
                               ext=".png", metadata={"prompt": prompt})
@@ -573,6 +606,18 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
             results["unresolved"].append({**request, "status": "invalid_request"})
             print(f"[StoryPilot] Asset {index}/{total}: invalid request.", flush=True)
             continue
+        request_key = request_signature({
+            "category": category, "query": query, "purpose": request.get("purpose"),
+            "segment": request.get("segment"), "candidates": [
+                row.get("url") for row in request.get("candidates", []) if isinstance(row, dict)
+            ], "reference_urls": request.get("reference_urls", []),
+        })
+        cached = library.cached_request_selection(request_key, category)
+        if cached:
+            results["assets"].append({**request, "status": "reused_cached_selection", "selected": {**cached, "reused": True}})
+            print(f"[StoryPilot] Asset {index}/{total}: reused prior scene selection.", flush=True)
+            continue
+
         matches = library.find_reusable(query, category=category, limit=1)
         if category == "video":
             matches = [match for match in matches if is_video_asset_path(match.get("path"))]
@@ -632,7 +677,7 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
                 downloads = [item for item in downloads if is_video_asset_path(item.get("path"))]
             if downloads:
                 selected = {**downloads[0], "category": category}
-            elif category == "picture":
+            elif category == "picture" and request.get("generated_media_required") is True:
                 generated = library.generate_image(
                     f"Editorial documentary illustration for {query}. {request.get('purpose','')} "
                     "Create a still image for a slow cinematic push-in; this is an illustration, not footage. "
@@ -654,6 +699,7 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
             )
             results["assets"].append({**request, "status": status,
                                       "selected": selected})
+            library.cache_request_selection(request_key, selected)
             print(f"[StoryPilot] Asset {index}/{total}: resolved ({status}).", flush=True)
         else:
             status = "no_video_clip_match_in_configured_sources" if category == "video" else "no_match_in_configured_sources"
