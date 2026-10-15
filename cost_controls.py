@@ -41,7 +41,7 @@ def resolve_model(stage: str, explicit_model: str | None = None) -> str:
     if explicit_model:
         return explicit_model
     env_name = STAGE_MODEL_ENV.get(stage, f"OPENAI_MODEL_{stage.upper()}")
-    return os.getenv(env_name, "").strip() or os.getenv("OPENAI_MODEL", "gpt-5").strip()
+    return os.getenv(env_name, "").strip() or os.getenv("OPENAI_MODEL", "").strip() or "gpt-5"
 
 
 def signature(payload: Any) -> str:
