@@ -165,7 +165,7 @@ and set a separate metadata model in the workspace `.env`:
 
 ```dotenv
 OPENAI_MODEL_METADATA=gpt-6-luna
-OPENAI_MODEL_METADATA_FALLBACK=gpt-6.1-sol
+OPENAI_MODEL_METADATA_FALLBACK=gpt-5
 ```
 
 The model IDs must be enabled for your API account. The fallback is used only
