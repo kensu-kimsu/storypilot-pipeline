@@ -32,7 +32,7 @@ FEATURE_REQUIREMENTS = {
     "portraits": (ROOT / "requirements-portraits.txt", ("rembg",)),
     "news": (ROOT / "requirements-news.txt", ("playwright",)),
 }
-CORE_MODULES = ("requests", "dotenv", "PIL", "azure.cognitiveservices.speech", "ormsgpack")
+CORE_MODULES = ("requests", "dotenv", "PIL", "yt_dlp")
 STAGES = ("all", "preproduction", "narration", "edit")
 
 
@@ -172,11 +172,14 @@ def _check(args: argparse.Namespace) -> tuple[list[tuple[str, bool, str]], list[
         if not openai_ok:
             guidance.append(f"Set up the OpenAI key with: python main_pipeline.py setup-apis --base-dir \"{base_dir}\"")
         needs_youtube = not args.topic_provided and args.stage in {"all", "preproduction"}
+        youtube_ok = _configured("YOUTUBE_API_KEY", secrets, env_file)
         if needs_youtube:
-            youtube_ok = _configured("YOUTUBE_API_KEY", secrets, env_file)
-            findings.append(("YouTube Data API key", youtube_ok, "configured" if youtube_ok else "missing; required for topic discovery, not when a topic is supplied"))
+            findings.append(("YouTube Data API key", youtube_ok, "configured" if youtube_ok else "missing; required for topic discovery"))
             if not youtube_ok:
-                guidance.append("Add YOUTUBE_API_KEY through setup-apis if using automatic topic discovery, or check preproduction with --topic-provided.")
+                guidance.append("Add YOUTUBE_API_KEY through setup-apis for automatic topic discovery, or supply --topic to skip topic discovery.")
+        else:
+            findings.append(("Optional API key: YOUTUBE_API_KEY", True,
+                             "configured" if youtube_ok else "not configured; YouTube scene-video search will be skipped"))
         for key in ("PIXABAY_API_KEY", "FREESOUND_API_KEY"):
             configured = _configured(key, secrets, env_file)
             findings.append((f"Optional API key: {key}", True, "configured" if configured else "not configured; matching asset searches will be skipped"))
@@ -185,10 +188,22 @@ def _check(args: argparse.Namespace) -> tuple[list[tuple[str, bool, str]], list[
         provider = str(os.environ.get("NARRATION_PROVIDER") or secrets.get("NARRATION_PROVIDER") or env_file.get("NARRATION_PROVIDER") or "azure").strip().lower()
         findings.append(("Narration provider", provider in {"azure", "fish", "chatterbox"}, provider or "unset (defaults to azure)"))
         if provider == "azure":
+            azure_sdk_ok = _module_available("azure.cognitiveservices.speech")
+            findings.append((
+                "Python package: azure.cognitiveservices.speech",
+                azure_sdk_ok,
+                "installed" if azure_sdk_ok else "missing; install with pip install azure-cognitiveservices-speech",
+            ))
             for key in ("AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"):
                 ok = _configured(key, secrets, env_file)
                 findings.append((f"Azure Speech: {key}", ok, "configured" if ok else "missing; required for Azure narration"))
         elif provider == "fish":
+            msgpack_ok = _module_available("ormsgpack")
+            findings.append((
+                "Python package: ormsgpack",
+                msgpack_ok,
+                "installed" if msgpack_ok else "missing; install with pip install ormsgpack",
+            ))
             url = str(os.environ.get("FISH_SPEECH_URL") or secrets.get("FISH_SPEECH_URL") or env_file.get("FISH_SPEECH_URL") or "http://127.0.0.1:8080").strip()
             ok = _fish_server_ok(url)
             findings.append(("Local Fish Speech server", ok, f"healthy at {url}" if ok else f"no healthy /v1/health at {url}"))

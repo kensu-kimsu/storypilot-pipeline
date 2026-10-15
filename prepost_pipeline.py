@@ -14,10 +14,12 @@ import os
 import re
 import shutil
 import sys
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from workspace_setup import configure_api_keys, ensure_workspace
 
 try:
@@ -44,6 +46,89 @@ def _json(path: Path, default: Any = None) -> Any:
 def _write(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+class _ConsoleProgress:
+    """Live console bar with a rough, dynamically scaled time estimate."""
+    def __init__(self, estimated_total_seconds: float = 900.0):
+        self.started = time.monotonic()
+        self.estimated_total = estimated_total_seconds
+        self.percent = 0.0
+        self.label = "Starting preproduction"
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._heartbeat, daemon=True)
+        self.thread.start()
+
+    @staticmethod
+    def _duration(seconds: float) -> str:
+        seconds = max(0, int(seconds))
+        minutes, seconds = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h {minutes:02d}m" if hours else f"{minutes}m {seconds:02d}s"
+
+    def set_estimate(self, seconds: float) -> None:
+        with self.lock:
+            self.estimated_total = max(60.0, seconds)
+
+    def update(self, message: str, percent: float) -> None:
+        with self.lock:
+            self.label = message[:36]
+            self.percent = max(self.percent, min(100.0, percent))
+        self.render()
+
+    def render(self) -> None:
+        with self.lock:
+            elapsed = time.monotonic() - self.started
+            percent = self.percent
+            expected = self.estimated_total
+            label = self.label
+        nominal_done = expected * percent / 100.0
+        scale = min(2.5, max(0.5, elapsed / nominal_done)) if nominal_done >= 20 else 1.0
+        remaining = expected * (1.0 - percent / 100.0) * scale
+        filled = int(20 * percent / 100.0)
+        bar = "=" * filled + " " * (20 - filled)
+        status = (f"\r[StoryPilot] [{bar}] {percent:5.1f}% | elapsed {self._duration(elapsed)} "
+                  f"| ETA ~{self._duration(remaining)} | {label}")
+        sys.stdout.write(status[:120].ljust(120))
+        sys.stdout.flush()
+
+    def _heartbeat(self) -> None:
+        while not self.stop_event.wait(2.0):
+            self.render()
+
+    def finish(self) -> None:
+        self.update("Preproduction complete", 100.0)
+        self.stop_event.set()
+        self.thread.join(timeout=0.2)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
+_RUN_PROGRESS: _ConsoleProgress | None = None
+
+
+def _progress(message: str, percent: float | None = None) -> None:
+    """Print a stage update and refresh the live progress bar."""
+    if percent is None:
+        markers = (
+            ("Setup:", 1), ("Channel selected:", 3), ("Discovery 1/2:", 5),
+            ("Discovery 1/2 complete:", 10), ("Discovery 2/2 complete:", 14),
+            ("Using supplied topic:", 14), ("Research 1/5:", 20),
+            ("Research 2/5:", 34), ("Research verification complete:", 42),
+            ("Script 3/5:", 45), ("Script complete:", 54), ("Assets 4/5:", 57),
+            ("News visuals:", 60), ("Packaging 5/5:", 63),
+            ("Asset discovery:", 75), ("Asset acquisition:", 83),
+            ("Asset acquisition complete:", 99), ("Preproduction complete.", 100),
+        )
+        percent = next((value for marker, value in reversed(markers) if marker in message), 3)
+        if message.startswith("Thumbnail "):
+            match = re.search(r"Thumbnail (\d+)/(\d+)", message)
+            if match:
+                percent = 63 + 12 * int(match.group(1)) / max(1, int(match.group(2)))
+    if _RUN_PROGRESS is not None:
+        _RUN_PROGRESS.update(message, percent)
+    print(f"\n[StoryPilot] {message}", flush=True)
 
 
 def _slug(text: str) -> str:
@@ -587,12 +672,12 @@ Topic: {topic}. Target at least 20 minutes spoken narration (roughly 2,700-3,000
 Retention design: {niche_config.get('retention_guidance', '')}
 Maintain attention from the first line through the ending: open on a specific verified moment or question; state a truthful story promise early; build in clear acts where each section adds evidence, changes the stakes, or corrects an earlier assumption; pay off every major question. Add meaningful re-hooks about every 2-3 minutes, but never use fake cliffhangers, repeat the same teaser, or withhold basic facts merely to inflate watch time. Remove repeated exposition and filler. The ending must resolve the central story, then offer a natural reason to watch another episode without an artificial cliffhanger.
 Write for a natural human narrator using English. Keep sentences speakable and varied, use contractions where natural, and avoid stiff transitions, repeated rhetorical questions, forced slang, and overly polished essay language. Never put performance directions inside the words to be spoken. The narrator should follow the emotion and tone assigned to each scene; let intensity rise and fall with the evidence rather than reading every line dramatically.
-For each narration chunk, give a `tone` that the creative director can use, plus `delivery_emotion`, `delivery_pace`, `vocal_intensity` from 0.0 to 1.0, and `pause_after_seconds`. These fields guide a future TTS/narrator pass; do not write the audio itself. Overall narration direction: {narration_direction}
-Act as the visual creative director too. For each chunk choose one `visual_mode` from `minimalist_text`, `split_screen`, `animated_chart`, `document_focus`, `animated_map`, `parallax_portrait`, `kinetic_fact`, or `cinematic_broll`. Choose it because it expresses the verified evidence in that scene, not to create random variation. Add `visual_evidence`, naming the exact verified detail or source visual that should appear, and `visual_rationale`, explaining why the visual mode suits the beat. Make asset queries scene-specific and avoid generic stock searches where a document, map, chart, or relevant subject image would tell the story better. Use channel branding consistently: {json.dumps(channel.get('visual_brand', {}), ensure_ascii=False)}. Keep its font and brand colors stable; use topic palette and layout changes only when they serve this episode's story. Never invent a chart, map, document, or evidence image.
+Narration performance is a scene-by-scene arc, not just emotion labels. Keep each narration chunk to 1-3 speakable sentences (about 15-45 words) and split when the emotional beat changes so TTS can change delivery between chunks. Write times in words for spoken narration (for example, `eleven forty-seven`), never as clock digits such as `11:47`, which this local TTS may misread. Do not add all-caps emphasis or performance directions to spoken text. For SOMBER or sad beats, use restrained, intimate language, shorter clauses, reflective wording, `delivery_emotion` such as `somber` or `sad`, `tone` such as `quiet grief` or `grief-stricken reflection`, `delivery_pace` `slow`, `vocal_intensity` around 0.25-0.4, and `pause_after_seconds` around 0.5-0.9. Let the word choice carry grief; do not shout or over-dramatize. For SUSPENSE, create a real build across 3-5 consecutive chunks: start restrained (`vocal_intensity` around 0.25), add one verified clue per beat, shorten sentences as the reveal approaches, then raise intensity in controlled steps (for example 0.25, 0.4, 0.55, 0.7). Keep `delivery_pace` `slow` throughout the build, use tones such as `quiet tension` then `rising anticipation`, and set deliberate `pause_after_seconds` around 0.6-1.2 before the reveal. Do not make suspenseful lines sound like shouting; the final reveal should stay controlled. Use ellipses sparingly; rely on sentence structure and actual pauses. Chatterbox only has broad intensity and cadence controls, so the script's sentence shape and chunk boundaries must carry the intended performance. For every chunk also set `tone`, `delivery_emotion`, `delivery_pace`, `vocal_intensity` from 0.0 to 1.0, and `pause_after_seconds`. Overall narration direction: {narration_direction}
+Act as the visual creative director too. For each chunk choose one `visual_mode` from `minimalist_text`, `split_screen`, `animated_chart`, `document_focus`, `animated_map`, `parallax_portrait`, `kinetic_fact`, or `cinematic_broll`. Choose it because it expresses the verified evidence in that scene, not to create random variation. Add `visual_evidence`, naming the exact verified detail or source visual that should appear, and `visual_rationale`, explaining why the visual mode suits the beat. For `asset_queries`, provide 2-3 concise, scene-specific search phrases for REAL MOVING VIDEO FOOTAGE (subjects, actions, places, era); do not put URLs, source citations, or image-only concepts in these queries. Put any source URLs in separate `reference_urls` if needed. The asset downloader treats these as video-only requests and will never replace missing footage with a still image. Still images are requested only through `parallax_assets` when that specific layered portrait treatment is essential. Use channel branding consistently: {json.dumps(channel.get('visual_brand', {}), ensure_ascii=False)}. Keep its font and brand colors stable; use topic palette and layout changes only when they serve this episode's story. Never invent a chart, map, document, or evidence image.
 Add optional `graphic_spec` for evidence-backed graphics only. Charts use 2-6 items with label, exact numeric value phrase copied from a verified claim, and its claim_id. Counters use the exact numeric phrase and claim_id. Route schematics use 2-6 place names copied exactly from the same verified claim, in order, labelled schematic and not to scale. For `geographic_map`, use 2-8 exact coordinates only from that claim's independently checked geo_points; include name, exact decimal latitude/longitude, and claim_id. Never guess coordinates. For `document_highlight`, provide claim_id and a short exact phrase appearing in that verified claim; the renderer must find the phrase with OCR in the selected document image before highlighting it. Set graphic_spec to null if evidence or asset support is missing. The program rejects unsupported graphic data. For a true 2.5D `parallax_portrait`, optionally provide `parallax_assets` with distinct `portrait_query` and `background_query`; Python must use a separate background plate so the portrait is not duplicated. This is optional and should be used only if both relevant images can be sourced/generated.
 For each narration chunk, decide whether a real news headline is creatively necessary. Normally set "news_article_screenshot": null. Request one only when an actual news headline materially strengthens the scene (for example, showing contemporaneous media coverage of a major event). Do not request generic headlines or decorative screenshots; request at most two total. When needed, set {{"search_query":"specific article/story query","highlight_keywords":["one or two exact headline terms"],"reason":"why the headline itself helps this scene"}}.
 Research ledger (only these verified claims may support factual narration): {json.dumps(claims, ensure_ascii=False)}
-Return strict JSON {{"title_working":"...","logline":"...","narration_direction":"...","voice_name":"{voice_name}","narration_chunks":[{{"section_title":"...","text":"...","claim_ids":["C1"],"tone":"...","delivery_emotion":"...","delivery_pace":"measured|brisk|slow","vocal_intensity":0.5,"pause_after_seconds":0.5,"audio_energy":0.5,"retention_function":"...","visual_mode":"one allowed mode","visual_evidence":"specific verified story detail to show","visual_rationale":"why this treatment fits the beat","visual_note":"...","asset_queries":["..."],"parallax_assets":null,"graphic_spec":null,"news_article_screenshot":null,"music_mood":"...","sfx_cues":["..."]}}],"shorts_script":{{"text":"standalone complete 30-second short, about 60-75 words","hook":"...","payoff":"...","claim_ids":["C1"],"narration_direction":"..."}}}}."""
+Return strict JSON {{"title_working":"...","logline":"...","narration_direction":"...","voice_name":"{voice_name}","narration_chunks":[{{"section_title":"...","text":"...","claim_ids":["C1"],"tone":"...","delivery_emotion":"...","delivery_pace":"measured|brisk|slow","vocal_intensity":0.5,"pause_after_seconds":0.5,"audio_energy":0.5,"retention_function":"...","visual_mode":"one allowed mode","visual_evidence":"specific verified story detail to show","visual_rationale":"why this treatment fits the beat","visual_note":"...","asset_queries":["scene-specific real video footage search phrase"],"reference_urls":[],"parallax_assets":null,"graphic_spec":null,"news_article_screenshot":null,"music_mood":"...","sfx_cues":["..."]}}],"shorts_script":{{"text":"standalone complete 30-second short, about 60-75 words","hook":"...","payoff":"...","claim_ids":["C1"],"narration_direction":"..."}}}}."""
     script = parse_json_text(response_text(openai_response(prompt)))
     graphic_issues = []
     for index, chunk in enumerate(script.get("narration_chunks", []), 1):
@@ -617,6 +702,30 @@ Return strict JSON {{"title_working":"...","logline":"...","narration_direction"
 def asset_research(script: dict, out_dir: Path) -> dict:
     """Compile the AI creative brief into one per-video downloader handoff."""
     requests_list, seen = [], set()
+
+    def footage_query(raw: Any, chunk: dict) -> tuple[str, list[str]]:
+        text = str(raw or "").strip()
+        refs = re.findall(r"https?://[^\s\]\[()<>\"']+", text)
+        clean = re.sub(r"https?://[^\s\]\[()<>\"']+", " ", text).strip()
+        if refs:
+            # URLs are evidence references, not search terms. Give providers a
+            # short visual query grounded in the scene text instead.
+            parts = [str(chunk.get(key, "")).strip() for key in
+                     ("visual_evidence", "section_title", "visual_rationale")]
+            for ref in refs:
+                parsed = urlparse(ref)
+                domain = parsed.netloc.lower().removeprefix("www.").split(":")[0]
+                domain = domain.rsplit(".", 1)[0].replace("-", " ") if domain else ""
+                path_words = re.sub(r"[-_/]+", " ", unquote(parsed.path))
+                path_words = re.sub(r"\.[a-z0-9]{2,5}$", " ", path_words, flags=re.I)
+                parts.extend((domain, path_words))
+            clean = " ".join(part for part in parts if part)
+        clean = clean.replace("‘", " ").replace("’", " ").replace("“", " ").replace("”", " ")
+        clean = re.sub(r"\s+", " ", clean).strip(" .,/;:")
+        # Pixabay rejects oversized q values. Keep the downloader query below
+        # its documented search-term limit while retaining the source URL.
+        return clean[:100].rstrip(), refs
+
     for i, chunk in enumerate(script.get("narration_chunks", []), 1):
         parallax = chunk.get("parallax_assets")
         if isinstance(parallax, dict) and chunk.get("visual_mode") == "parallax_portrait":
@@ -628,9 +737,13 @@ def asset_research(script: dict, out_dir: Path) -> dict:
                         "purpose": "Source image for a layered 2.5D portrait scene; foreground and background must be distinct",
                         "suggested_sources": ["Pixabay API", "Wikimedia Commons (no key)", "Internet Archive (no key)", "official company newsroom", "OpenAI generated image"],
                         "source_url": None, "local_path": None, "rights_status": "unknown", "license_evidence": None, "download_status": "not_downloaded"})
-        for query_index, query in enumerate(chunk.get("asset_queries", [])):
-            category = "video" if query_index % 2 == 0 else "picture"
-            key = (str(query).strip().lower(), category)
+        raw_queries = chunk.get("asset_queries", [])
+        if isinstance(raw_queries, str):
+            raw_queries = [raw_queries]
+        for query in raw_queries:
+            query, reference_urls = footage_query(query, chunk)
+            category = "video"
+            key = (query.lower(), category)
             if not key or key in seen:
                 continue
             seen.add(key)
@@ -640,9 +753,9 @@ def asset_research(script: dict, out_dir: Path) -> dict:
                                  "visual_mode": chunk.get("visual_mode"),
                                  "visual_evidence": chunk.get("visual_evidence"),
                                  "visual_rationale": chunk.get("visual_rationale"),
-                                 "suggested_sources": ["Pixabay API", "Wikimedia Commons (no key)", "Internet Archive (no key)", "Library of Congress (no key)", "NASA Image and Video Library (no key)", "official company newsroom"],
-                                 "source_url": None, "local_path": None,
-                                 "rights_status": "unknown", "max_duration_seconds": 5 if category == "video" else None,
+                        "suggested_sources": ["YouTube Data API search + yt-dlp candidate download", "TikTok web search + yt-dlp candidate download", "Pixabay video API", "Wikimedia Commons video (no key)", "Internet Archive movies (no key)", "NASA video library (no key)"],
+                                 "reference_urls": reference_urls, "source_url": None, "local_path": None,
+                                 "rights_status": "unknown", "max_duration_seconds": 5,
                                  "license_evidence": None, "download_status": "not_downloaded"})
         music_query = str(chunk.get("music_mood", "")).strip()
         if music_query:
@@ -658,20 +771,37 @@ def asset_research(script: dict, out_dir: Path) -> dict:
                 "category": "sfx", "segment": i, "purpose": "Sound effect matched to the scene direction",
                 "suggested_sources": ["YouTube Audio Library local catalog"], "download_status": "match_local_catalog"})
     requests_list.extend(_article_screenshot_requests(script))
-    ledger = {"policy": "AI provides per-scene needs; Python resolves, downloads, caches and records reusable files. Discovery is not reuse permission.", "assets": requests_list}
+    ledger = {"policy": "AI provides scene-specific needs; Python searches configured sources, downloads selected candidates, asks AI to choose a relevant timestamped excerpt, cuts it to at most five seconds, and records source metadata. Discovery is not reuse permission.", "assets": requests_list}
     _write(out_dir / "asset_requests.json", ledger)
     return ledger
 
 
 def search_asset_sources(ledger_path: Path, *, max_results: int = 3) -> dict:
-    """Attach candidates from Wikimedia Commons, IA, LOC and NASA (no keys)."""
+    """Attach video/image candidates from public archives and social video search."""
     ledger = _json(ledger_path, {"assets": []})
     from media_library import MediaLibrary
+    from social_video import discover_social_videos
     library = MediaLibrary(ledger_path.parents[2] / "assets")
-    for asset in ledger.get("assets", []):
-        if asset.get("category") not in {"picture", "video"}:
-            continue
-        asset["candidates"] = library.search_public_archives(asset["query"], asset["category"], limit=max_results)
+    assets = [asset for asset in ledger.get("assets", []) if asset.get("category") in {"picture", "video"}]
+    total = len(assets)
+    social_limit = max(0, int(os.getenv("SOCIAL_VIDEO_SEARCHES_PER_RUN", "10")))
+    social_queries: set[str] = set()
+    for index, asset in enumerate(assets, 1):
+        pct = 75 + 7 * index / max(1, total)
+        _progress(f"Asset search {index}/{total}: {asset.get('category')} — {asset.get('query', '')[:60]}", pct)
+        candidates = library.search_public_archives(asset["query"], asset["category"], limit=max_results)
+        if asset.get("category") == "video":
+            query_key = str(asset.get("query", "")).strip().casefold()
+            social = []
+            if query_key not in social_queries and len(social_queries) < social_limit:
+                social_queries.add(query_key)
+                social = discover_social_videos(asset["query"], limit_per_platform=min(max_results, 2))
+            # Put platform search results first: the acquisition stage tries these
+            # and retains only the AI-selected five-second excerpt.
+            asset["candidates"] = social + candidates
+            asset["social_search_performed"] = query_key in social_queries
+        else:
+            asset["candidates"] = candidates
     _write(ledger_path, ledger)
     return ledger
 
@@ -705,10 +835,24 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
     job_id = f"{_slug(channel.get('handle', 'channel'))}_{_slug(topic)}"
     out = base_dir / "jobs" / job_id
     out.mkdir(parents=True, exist_ok=True)
+    _progress("Research 1/5: searching for sourced claims; this may take a few minutes.")
     research = research_story(topic, channel, niche_config)
+    _progress(f"Research 2/5: independently checking {len(research.get('claims', []))} claims.")
     research = verify_research_claims(topic, research, niche_config)
+    verified_count = len(research.get("verified_claims", []))
+    _progress(f"Research verification complete: {verified_count} claims passed or were qualified.")
+    _progress("Script 3/5: writing the documentary and complete short-form story.")
     script = write_script(topic, channel, research, niche_config)
+    _progress(f"Script complete: {script.get('approx_word_count', 0)} estimated narration words.")
+    _progress("Assets 4/5: preparing scene-specific visual, music, and sound-effect requests.")
     asset_manifest = asset_research(script, out)
+    if _RUN_PROGRESS is not None:
+        visual_count = sum(asset.get("category") in {"picture", "video"} for asset in asset_manifest.get("assets", []))
+        thumbnail_count = 2 if generate_thumbnails else 0
+        _RUN_PROGRESS.set_estimate(480 + visual_count * 45 + thumbnail_count * 120)
+    screenshot_requests = _article_screenshot_requests(script)
+    if screenshot_requests:
+        _progress(f"News visuals: capturing {len(screenshot_requests)} requested article headline(s).")
     screenshots = fulfill_news_headline_requests(topic, script, base_dir / "assets", job_id=job_id)
     screenshot_by_id = {row.get("asset_id"): row for row in screenshots.get("screenshots", [])}
     for asset in asset_manifest["assets"]:
@@ -719,6 +863,7 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
         if result.get("status") == "captured":
             asset["local_path"] = result["image_path"]
     _write(out / "asset_requests.json", asset_manifest)
+    _progress("Packaging 5/5: generating titles, description, tags, and thumbnail concepts.")
     metadata = make_metadata(topic, channel, script)
     _write(out / "research.json", research)
     _write(out / "script.json", script)
@@ -728,7 +873,9 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
                                  "research_file": "research.json", "script_file": "script.json", "asset_manifest": "asset_requests.json",
                                  "metadata_file": "metadata_ab_test.json", "human_polish_required": False})
     if generate_thumbnails:
-        for index, concept in enumerate(metadata.get("thumbnail_briefs", [])[:2], 1):
+        concepts = metadata.get("thumbnail_briefs", [])[:2]
+        for index, concept in enumerate(concepts, 1):
+            _progress(f"Thumbnail {index}/{len(concepts)}: generating image; this can take several minutes.")
             image_prompt = f"YouTube documentary thumbnail, 16:9 composition, high contrast, topic: {topic}. {concept.get('composition','')}. Visual idea: {concept.get('concept','')}. Leave clear negative space for short text: {concept.get('text','')}. Avoid logos and tiny text."
             generate_thumbnail(image_prompt, out / f"thumbnail_{index}.png")
     return out
@@ -758,6 +905,32 @@ def qa_package(job_dir: Path, final_files: list[Path] | None = None) -> list[str
     for asset in _json(job_dir / "asset_requests.json", {}).get("assets", []):
         if asset.get("local_path") and asset.get("rights_status") not in {"owned", "licensed", "public_domain", "permission"}:
             errors.append(f"Asset {asset.get('asset_id')} has no documented reuse status")
+    selected_path = job_dir / "selected_assets.json"
+    if selected_path.exists():
+        selected_pack = _json(selected_path, {})
+        video_suffixes = {".mp4", ".webm", ".ogv", ".mov", ".mkv", ".mpeg", ".mpg"}
+        for row in selected_pack.get("assets", []):
+            if row.get("category") != "video":
+                continue
+            chosen = row.get("selected") or {}
+            local = Path(chosen.get("path", "")) if chosen.get("path") else None
+            if not local or not local.is_file():
+                errors.append(f"Video request {row.get('asset_id')} has no downloaded local clip")
+            elif local.suffix.lower() not in video_suffixes:
+                errors.append(f"Video request {row.get('asset_id')} resolved to a non-video file: {local.name}")
+            details = chosen.get("metadata") or {}
+            if chosen.get("source") in {"youtube", "tiktok"}:
+                try:
+                    start = float(details["segment_start_seconds"])
+                    end = float(details["segment_end_seconds"])
+                    maximum = float(row.get("max_duration_seconds", 5))
+                    if start < 0 or end <= start or end - start > maximum + 0.01:
+                        errors.append(f"Social video request {row.get('asset_id')} has an invalid or over-limit selected time range")
+                except (KeyError, TypeError, ValueError):
+                    errors.append(f"Social video request {row.get('asset_id')} has no validated AI-selected time range")
+        for row in selected_pack.get("unresolved", []):
+            if row.get("category") == "video":
+                errors.append(f"Required video clip unresolved for {row.get('asset_id')}: {row.get('query', '')}")
     if final_files is not None:
         for file in final_files:
             if not file.exists() or file.stat().st_size < 5 * 1024 * 1024:
@@ -772,6 +945,7 @@ def record_history(history_path: Path, channel_id: str, topic: str, video_id: st
 
 
 def main() -> None:
+    global _RUN_PROGRESS
     parser = argparse.ArgumentParser(description="Research, script, asset brief, metadata and thumbnail preproduction")
     parser.add_argument("--channels", type=Path, required=True, help="JSON array of channel configs")
     parser.add_argument("--base-dir", type=Path, required=True)
@@ -779,35 +953,44 @@ def main() -> None:
     parser.add_argument("--topic", help="Skip discovery and prepare this topic")
     parser.add_argument("--niche-prompts", type=Path, default=Path(__file__).with_name("niche_prompts.json"), help="Niche-specific research, script and narrator instructions")
     parser.add_argument("--make-thumbnails", action="store_true", help="Call the configured OpenAI image model")
-    parser.add_argument("--discover-assets", action="store_true", help="Search Pixabay and public archives for candidate URLs")
-    parser.add_argument("--acquire-assets", action="store_true", help="Download/reuse Pixabay or public archive visuals, generate missing stills, and match local audio")
+    parser.add_argument("--discover-assets", action="store_true", help="Search YouTube, TikTok web results, Pixabay, and public archives for scene-specific media candidates")
+    parser.add_argument("--acquire-assets", action="store_true", help="Download/reuse real video clips; AI selects and FFmpeg cuts a relevant excerpt up to five seconds")
     parser.add_argument("--youtube-audio-library-dir", type=Path, help="Folder containing downloaded YouTube Audio Library files; expected subfolders background_music/ and sfx/")
     args = parser.parse_args()
+    _RUN_PROGRESS = _ConsoleProgress()
+    _progress("Setup: preparing workspace and loading API credentials.")
     workspace = ensure_workspace(args.base_dir)
     required_keys = ("OPENAI_API_KEY",) if args.topic else ("OPENAI_API_KEY", "YOUTUBE_API_KEY")
     api_status = configure_api_keys(args.base_dir, required_keys=required_keys)
     if api_status["missing_optional"]:
         print("Optional providers not configured (their features will be skipped): " + ", ".join(api_status["missing_optional"]))
-    print(f"Production folders ready: {workspace['root']}")
+    print(f"Production folders ready: {workspace['root']}", flush=True)
     channels = _json(args.channels, [])
     channel = next((c for c in channels if not args.channel or c.get("handle") == args.channel), None)
     if channel is None:
         raise SystemExit("No matching channel in channels JSON")
+    _progress(f"Channel selected: {channel.get('name', channel.get('handle'))} ({channel.get('niche', 'niche not set')}).")
     history_path = args.base_dir / "history.json"
     history = _json(history_path, [])
     topic = args.topic
     if not topic:
+        _progress("Discovery 1/2: searching YouTube for videos from the last 90 days; waiting for YouTube API.")
         trending = discover_youtube_videos(channel.get("niche", ""))
+        _progress(f"Discovery 1/2 complete: ranked {len(trending)} recent videos. Asking OpenAI for five topic ideas.")
         _write(args.base_dir / "discovery" / f"{_slug(channel.get('handle','channel'))}.json", trending)
         ideas = propose_ideas(channel, trending, history)
         _write(args.base_dir / "discovery" / "ideas.json", {"channel": channel, "ideas": ideas})
         if not ideas:
             raise SystemExit("No non-duplicate topic ideas generated")
         topic = ideas[0]["topic"]
+        _progress(f"Discovery 2/2 complete: selected topic — {topic}")
+    else:
+        _progress(f"Using supplied topic: {topic}")
     niche_config = get_niche_config(channel.get("niche", ""), args.niche_prompts)
     job_dir = prepare_job(channel, topic, args.base_dir, generate_thumbnails=args.make_thumbnails,
                           niche_config=niche_config)
     if args.discover_assets:
+        _progress("Asset discovery: searching YouTube, TikTok web results, and public image/video archives.")
         search_asset_sources(job_dir / "asset_requests.json")
     if args.acquire_assets:
         from media_library import MediaLibrary, acquire_asset_requests
@@ -818,10 +1001,19 @@ def main() -> None:
                 if source_folder.exists():
                     shared_assets.import_audio_library_folder(source_folder, category)
         requests_manifest = _json(job_dir / "asset_requests.json", {"assets": []})
-        pack = acquire_asset_requests(requests_manifest, shared_assets)
+        _progress(f"Asset acquisition: resolving {len(requests_manifest.get('assets', []))} scene requests; one update will appear per asset.")
+        def asset_progress(index: int, total: int, message: str) -> None:
+            if _RUN_PROGRESS is not None:
+                pct = 83 + 15 * index / max(1, total)
+                _RUN_PROGRESS.update(f"Asset {index}/{total}: {message}", pct)
+        pack = acquire_asset_requests(requests_manifest, shared_assets, progress_callback=asset_progress)
         _write(job_dir / "selected_assets.json", pack)
+        _progress(f"Asset acquisition complete: {len(pack.get('assets', []))} resolved; {len(pack.get('unresolved', []))} unresolved.")
+    _progress("Preproduction complete. Job package is ready for narration.")
     print(f"Preproduction package ready: {job_dir}")
     print("Next: make narration, render the timeline, and run final QA. Check selected_assets.json for any requested assets that could not be matched.")
+    if _RUN_PROGRESS is not None:
+        _RUN_PROGRESS.finish()
 
 
 if __name__ == "__main__":

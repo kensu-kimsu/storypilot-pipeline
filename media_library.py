@@ -13,6 +13,7 @@ import os
 import re
 import sqlite3
 import shutil
+import tempfile
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -33,6 +34,12 @@ FOLDERS = {
     "music": "background_music",
     "sfx": "sfx",
 }
+VIDEO_SUFFIXES = {".mp4", ".webm", ".ogv", ".mov", ".mkv", ".mpeg", ".mpg"}
+
+
+def is_video_asset_path(value: str | Path | None) -> bool:
+    """Return whether a local asset has a recognized video container suffix."""
+    return bool(value and Path(value).suffix.lower() in VIDEO_SUFFIXES)
 
 
 def _slug(text: str) -> str:
@@ -127,6 +134,10 @@ class MediaLibrary:
             asset_id, cat, path, title, tags, source, source_url, lic, creator, duration, metadata = row
             if category and cat != category:
                 continue
+            # Older catalogs may contain a generated PNG incorrectly recorded
+            # as video. Never reuse it to satisfy a footage request.
+            if cat == "video" and not is_video_asset_path(path):
+                continue
             words = set(re.findall(r"[a-z0-9]+", f"{title} {tags}".lower()))
             score = len(terms & words) / max(len(terms), 1)
             if score:
@@ -158,7 +169,11 @@ class MediaLibrary:
             max_searches = max(1, int(os.getenv("PIXABAY_MAX_SEARCHES_PER_RUN", "10")))
             if self.pixabay_searches_this_run >= max_searches:
                 return []
-            response = req.get(api_url, params={"key": key, "q": query, "per_page": min(max(limit, 1), 5), "safesearch": "true"}, timeout=30)
+            # Pixabay requires per_page to be between 3 and 200. We may only
+            # need one asset, but request the minimum valid page and select
+            # only `limit` hits below.
+            per_page = max(3, min(int(limit), 200))
+            response = req.get(api_url, params={"key": key, "q": query, "per_page": per_page, "safesearch": "true"}, timeout=30)
             response.raise_for_status()
             search_results = response.json()
             cache_path.write_text(json.dumps(search_results), encoding="utf-8")
@@ -179,6 +194,11 @@ class MediaLibrary:
                 continue
             media = req.get(download_url, timeout=60)
             media.raise_for_status()
+            content_type = str(getattr(media, "headers", {}).get("Content-Type", "")).split(";", 1)[0].lower()
+            if category == "video" and content_type and not content_type.startswith("video/"):
+                continue
+            if category == "picture" and content_type and not content_type.startswith("image/"):
+                continue
             saved.append(self._register(media.content, category=category, title=hit.get("tags") or query,
                 tags=(hit.get("tags") or query).split(","), source="pixabay", source_url=hit.get("pageURL", ""),
                 license_name="Pixabay Content License (confirm current terms)", creator=hit.get("user"),
@@ -366,7 +386,7 @@ class MediaLibrary:
                 content_type = media.headers.get("Content-Type", "").split(";")[0].lower()
                 if category == "picture" and content_type and not content_type.startswith("image/"):
                     continue
-                if category == "video" and content_type and not content_type.startswith("video/") and not download_url.lower().endswith((".mp4", ".webm", ".ogv", ".mov")):
+                if category == "video" and content_type and not content_type.startswith("video/"):
                     continue
                 suffix = Path(urlparse(download_url).path).suffix.lower()
                 if suffix not in {".jpg", ".jpeg", ".png", ".gif", ".tif", ".tiff", ".mp4", ".webm", ".ogv", ".mov"}:
@@ -386,6 +406,8 @@ class MediaLibrary:
                     chunks.append(chunk)
                 if not chunks:
                     continue
+                if category == "video" and not is_video_asset_path(suffix):
+                    continue
                 saved.append(self._register(b"".join(chunks), category=category,
                     title=candidate.get("title") or query, tags=[query], source=provider,
                     source_url=candidate.get("source_url", ""), license_name=candidate.get("license"),
@@ -394,6 +416,27 @@ class MediaLibrary:
             except Exception:
                 continue
         return saved
+
+    def download_social_candidate(self, candidate: dict, request: dict) -> dict:
+        """Download a selected YouTube/TikTok candidate, AI-select a moment, and cache only its cut."""
+        from social_video import download_and_cut
+
+        with tempfile.TemporaryDirectory(prefix="storypilot_social_cut_") as tmp:
+            cut_path = Path(tmp) / "selected_excerpt.mp4"
+            details = download_and_cut(
+                candidate, query=str(request.get("query", "")),
+                purpose=str(request.get("purpose", "")), output=cut_path,
+                max_clip_seconds=float(request.get("max_duration_seconds", 5) or 5),
+            )
+            return self._register(
+                cut_path.read_bytes(), category="video",
+                title=str(candidate.get("title") or request.get("query") or "social video excerpt"),
+                tags=[str(request.get("query", "")), candidate.get("source", "social_video")],
+                source=str(candidate.get("source", "social_video")),
+                source_url=str(candidate.get("url", "")),
+                license_name=None, creator=str(candidate.get("creator", "")) or None,
+                duration=details.get("duration"), ext=".mp4", metadata=details,
+            )
 
     def download_freesound_preview(self, query: str, category: str = "sfx", limit: int = 3) -> list[dict]:
         """Search Freesound and cache MP3 previews; original downloads need OAuth."""
@@ -481,8 +524,11 @@ def acquire_script_assets(script: dict, library: MediaLibrary, *, per_query: int
             if key in visual_seen:
                 continue
             visual_seen.add(key)
-            category = "video" if query_index % 2 == 0 else "picture"
+            # Narration asset queries are footage requests. Still images are
+            # requested explicitly via parallax_assets, never by alternation.
+            category = "video"
             found = library.find_reusable(query, category=category, limit=1)
+            found = [match for match in found if is_video_asset_path(match.get("path"))]
             if found and found[0]["match_score"] >= 0.5:
                 item = {"asset_id": found[0]["asset_id"], "path": found[0]["path"], "category": category,
                         "reused": True, "query": query, "section": section_index}
@@ -490,20 +536,13 @@ def acquire_script_assets(script: dict, library: MediaLibrary, *, per_query: int
                 downloaded = library.download_pixabay(query, category=category, limit=per_query)
                 if not downloaded:
                     downloaded = library.download_public_archives(query, category=category, limit=per_query)
+                downloaded = [asset for asset in downloaded if is_video_asset_path(asset.get("path"))]
                 item = ({**downloaded[0], "category": category, "reused": downloaded[0].get("reused", False),
                          "query": query, "section": section_index} if downloaded else None)
-            if item is None and category == "picture":
-                # Mark as illustration, never as real archival proof/document.
-                prompt = (f"Create an editorial documentary illustration for: {query}. "
-                          "Atmospheric visual metaphor only. Do not fabricate text, records, evidence, logos, or a real historical photograph.")
-                generated = library.generate_image(prompt, title=query, tags=[query, "generated illustration"])
-                if generated:
-                    item = {**generated, "category": "generated", "reused": generated.get("reused", False),
-                            "query": query, "section": section_index}
             if item:
                 manifest["assets"].append(item)
             else:
-                manifest["notes"].append(f"No asset found for visual query: {query}")
+                manifest["notes"].append(f"No video clip found for visual query: {query}")
 
         music_query = str(chunk.get("music_mood", chunk.get("tone", "documentary background music")))
         for category, cue in (("music", music_query), ("sfx", " ".join(chunk.get("sfx_candidates", [])))):
@@ -516,26 +555,84 @@ def acquire_script_assets(script: dict, library: MediaLibrary, *, per_query: int
     return manifest
 
 
-def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per_request: int = 1) -> dict:
+def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per_request: int = 1,
+                           progress_callback=None) -> dict:
     """Consume the AI-authored asset_requests.json handoff and resolve each row."""
     results = {"assets": [], "unresolved": [], "source_manifest": "asset_requests.json"}
-    for request in request_manifest.get("assets", []):
+    requests = request_manifest.get("assets", [])
+    total = len(requests)
+    social_search_limit = max(0, int(os.getenv("SOCIAL_VIDEO_SEARCHES_PER_RUN", "10")))
+    social_search_queries: set[str] = set()
+    for index, request in enumerate(requests, 1):
         category = request.get("category")
         query = str(request.get("query", "")).strip()
+        print(f"\n[StoryPilot] Asset acquisition {index}/{total}: {category or 'unknown'} — {query[:90]}", flush=True)
+        if progress_callback:
+            progress_callback(index, total, f"{category or 'unknown'} — {query[:48]}")
         if not query or category not in FOLDERS:
             results["unresolved"].append({**request, "status": "invalid_request"})
+            print(f"[StoryPilot] Asset {index}/{total}: invalid request.", flush=True)
             continue
         matches = library.find_reusable(query, category=category, limit=1)
+        if category == "video":
+            matches = [match for match in matches if is_video_asset_path(match.get("path"))]
         selected = None
         if matches and matches[0]["match_score"] >= 0.34:
             selected = {**matches[0], "reused": True}
         elif category in {"picture", "video"}:
-            downloads = library.download_pixabay(query, category=category, limit=per_request)
+            downloads = []
+            if category == "video":
+                candidates = [row for row in request.get("candidates", [])
+                              if isinstance(row, dict) and row.get("source") in {"youtube", "tiktok"}]
+                # Preserve explicitly supplied YouTube/TikTok links from the creative brief.
+                from social_video import choose_candidate, discover_social_videos, supported_social_url
+                for url in request.get("reference_urls", []):
+                    if supported_social_url(str(url)) and not any(row.get("url") == url for row in candidates):
+                        host = str(url).lower()
+                        candidates.append({"source": "tiktok" if "tiktok.com" in host else "youtube", "url": url,
+                                           "title": "", "description": ""})
+                query_key = query.casefold()
+                should_search = (
+                    not candidates and not request.get("social_search_performed")
+                    and query_key not in social_search_queries
+                    and len(social_search_queries) < social_search_limit
+                )
+                if should_search:
+                    social_search_queries.add(query_key)
+                    candidates = discover_social_videos(query, limit_per_platform=1)
+                if candidates:
+                    chosen_candidate, choose_reason = choose_candidate(candidates, query, str(request.get("purpose", "")))
+                    ordered = ([chosen_candidate] if chosen_candidate else []) + [row for row in candidates if row is not chosen_candidate]
+                    max_attempts = max(1, min(int(os.getenv("SOCIAL_VIDEO_MAX_CANDIDATES", "2")), 4))
+                    for candidate in ordered[:max_attempts]:
+                        try:
+                            print(f"[StoryPilot] Testing {candidate.get('source', 'social video')} candidate for this scene.", flush=True)
+                            social = library.download_social_candidate(candidate, request)
+                            social["metadata"] = {**(social.get("metadata") or {}), "candidate_selection_reason": choose_reason}
+                            downloads = [social]
+                            break
+                        except Exception as exc:
+                            print(f"[StoryPilot] Social video candidate failed ({type(exc).__name__}); trying configured footage sources.", flush=True)
+            try:
+                if not downloads:
+                    downloads = library.download_pixabay(query, category=category, limit=per_request)
+            except Exception as exc:
+                # Do not print the exception itself: requests.HTTPError embeds
+                # the full request URL, including the Pixabay API key.
+                response = getattr(exc, "response", None)
+                status = getattr(response, "status_code", None)
+                detail = f"HTTP {status}" if status else type(exc).__name__
+                print(f"[StoryPilot] Pixabay search failed ({detail}); trying public archives.", flush=True)
             if not downloads:
-                downloads = library.download_public_archives(query, category=category, limit=per_request)
+                try:
+                    downloads = library.download_public_archives(query, category=category, limit=per_request)
+                except Exception as exc:
+                    print(f"[StoryPilot] Public archive search failed ({type(exc).__name__}); continuing to fallback.", flush=True)
+            if category == "video":
+                downloads = [item for item in downloads if is_video_asset_path(item.get("path"))]
             if downloads:
                 selected = {**downloads[0], "category": category}
-            elif category in {"picture", "video"}:
+            elif category == "picture":
                 generated = library.generate_image(
                     f"Editorial documentary illustration for {query}. {request.get('purpose','')} "
                     "Create a still image for a slow cinematic push-in; this is an illustration, not footage. "
@@ -551,9 +648,16 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
         # Music and SFX are selected from the local catalog first, then from
         # Freesound CC0 previews when an API key is configured.
         if selected:
-            results["assets"].append({**request, "status": "reused" if selected.get("reused") else "downloaded_or_generated",
+            status = "reused" if selected.get("reused") else (
+                "downloaded_social_excerpt" if selected.get("source") in {"youtube", "tiktok"}
+                else "downloaded_or_generated"
+            )
+            results["assets"].append({**request, "status": status,
                                       "selected": selected})
+            print(f"[StoryPilot] Asset {index}/{total}: resolved ({status}).", flush=True)
         else:
-            results["unresolved"].append({**request, "status": "no_match_in_configured_sources"})
+            status = "no_video_clip_match_in_configured_sources" if category == "video" else "no_match_in_configured_sources"
+            results["unresolved"].append({**request, "status": status})
+            print(f"[StoryPilot] Asset {index}/{total}: no match in configured sources.", flush=True)
     return results
 

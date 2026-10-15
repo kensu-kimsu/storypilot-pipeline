@@ -4,7 +4,7 @@ StoryPilot is a Python-assisted production workflow for fact-led YouTube documen
 
 ## Current implementation boundary
 
-This repository automates **pre-production, Azure or local Fish Speech/Chatterbox narration and caption preparation, media acquisition, story-led editing, and local MP4 rendering**. The `edit` command checks asset readiness, retries missing manifest assets through configured sources, writes `edit_readiness.json`, and blocks if required files remain missing. It renders an MP4, runs technical QA, and saves a QA report. It does not upload to YouTube or start/read YouTube's native thumbnail experiment.
+This repository automates **pre-production, Azure or local Fish Speech/Chatterbox narration and caption preparation, media acquisition, story-led editing, and local MP4 rendering**. For video scenes, it can search YouTube with the Data API and search TikTok links through OpenAI web search, download selected candidates with yt-dlp, send a timestamped contact sheet to OpenAI for visual moment selection, then use FFmpeg to retain a muted excerpt of up to five seconds. The `edit` command checks asset readiness, retries missing manifest assets through configured sources, writes `edit_readiness.json`, and blocks if required files remain missing. It renders an MP4, runs technical QA, and saves a QA report. It does not upload to YouTube or start/read YouTube's native thumbnail experiment.
 
 ## Story-led variable editing
 
@@ -59,12 +59,14 @@ The command automatically uses `D:\YouTubeProduction\style_history.json` based o
 | Library of Congress | No | Historic photo collection search and image downloads. |
 | NASA Image and Video Library | No | NASA image/video searches and direct media files; most useful for space, Earth science, and aerospace topics. |
 | Official company newsroom/media pages | No API key | Best place to find accurate current company/product visuals. OpenAI web research can identify likely official pages; add the chosen file/page to the asset manifest. Automated download from arbitrary company sites is not enabled. |
-| YouTube | Yes, `YOUTUBE_API_KEY` for discovery | Finds public videos for topic discovery/reference. StoryPilot does not download YouTube media. |
+| YouTube | Yes, `YOUTUBE_API_KEY` | Searches topic ideas and scene-specific candidate video URLs; yt-dlp can download a selected public candidate temporarily for analysis and clipping. |
+| TikTok | No TikTok API key; uses `OPENAI_API_KEY` web search | Searches web-indexed public TikTok links for scene candidates. Coverage is limited and does not reproduce TikTok's in-app recommendations. |
+| yt-dlp | Installed from `requirements.txt` | Downloads a selected candidate temporarily. StoryPilot retains only the AI-selected excerpt (muted, up to five seconds) in `assets/video_clips/`. |
 | YouTube Audio Library | No API key | Import tracks that you download yourself into the local `audio_library_seed` folders. |
 | Freesound | Yes, `FREESOUND_API_KEY` | Optional CC0-filtered music/SFX preview search. Preview files are not original-quality downloads. |
 | OpenAI image generation | Uses `OPENAI_API_KEY` | Optional illustrative stills and thumbnail art. Generated imagery must not be presented as real archival evidence. |
 
-The extra no-key sources are **collection-specific archives**, not a universal Google Images replacement. For a named modern company, its official press/media page is usually the most accurate source. The program records source URLs, creators, and available license metadata in the asset catalog.
+The extra no-key sources are **collection-specific archives**, not a universal Google Images replacement. For a named modern company, its official press/media page is usually the most accurate source. The program records source URLs, creators, selected timecodes, and available source metadata in the asset catalog. TikTok web search finds indexed links, not every TikTok post; its official Research API is restricted to eligible researchers and is not used by StoryPilot. Downloaded social-video audio is stripped so narration and the local music/SFX mix remain under StoryPilot's control.
 
 ## 1. Install and configure
 
@@ -111,7 +113,7 @@ For macOS/Linux, use a path such as `./production` instead. Key entry is hidden.
 | Key | Needed when |
 |---|---|
 | `OPENAI_API_KEY` | Required for research, script/metadata generation, and optional images. |
-| `YOUTUBE_API_KEY` | Needed for trend/topic discovery. Skip it when you pass `--topic`. |
+| `YOUTUBE_API_KEY` | Needed for trend/topic discovery and YouTube scene-video search. TikTok web search uses the OpenAI key. |
 | `PIXABAY_API_KEY` | Optional; enter your key to include Pixabay stock candidates/downloads. |
 | `FREESOUND_API_KEY` | Optional; enables the CC0-filtered Freesound audio preview search. |
 | `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION` | Required only to synthesize narration. Store them in the production workspace `secrets.json` or environment. |
@@ -161,7 +163,9 @@ The script writer normally sets `news_article_screenshot` to `null`. It requests
 
 Images are saved under `assets/screenshots/<job-name>/` with topic, publisher, and headline slugs in the filename. `article_screenshots.json` records the exact headline, source URL, highlighted terms, capture time, and status. This step does not scrape Google results or bypass site restrictions.
 
-That discovery mode needs `YOUTUBE_API_KEY`. YouTube's public counters do not provide competitor retention or watch-time data. The project processes one selected topic per run. It reads `history.json` to avoid repeats, but the current CLI does not automatically write completed topics to that file; the `record_history()` helper must be called by a later publishing/completion step.
+Topic discovery and YouTube scene-video search need `YOUTUBE_API_KEY`. YouTube's public counters do not provide competitor retention or watch-time data. The project processes one selected topic per run. It reads `history.json` to avoid repeats, but the current CLI does not automatically write completed topics to that file; the `record_history()` helper must be called by a later publishing/completion step.
+
+**Social-video search/download behavior:** YouTube candidates come from the Data API; TikTok candidates come from OpenAI web search, so coverage depends on public pages indexed by search engines. yt-dlp receives a selected public video URL and does not use browser cookies or attempt private, login-gated, or DRM-protected downloads. The original full video is temporary and deleted after the excerpt is saved. Search may return no suitable clip; the acquisition report records the miss and continues to configured stock/archive sources. Platform terms and rights still apply in a non-monetized test.
 
 ## 4. What each stage does and writes
 
@@ -176,8 +180,8 @@ That discovery mode needs `YOUTUBE_API_KEY`. YouTube's public counters do not pr
 | Narration preparation | Synthesizes each chunk with Azure Speech, local Fish Speech S2, or the local Chatterbox bridge, applies delivery direction, and creates English captions. | `narration.wav`, `narration_manifest.json`, `word_timestamps.json`, `captions.srt`, and `timed_edit_job.json`. Azure supplies word boundaries; local providers use approximate word timing. |
 | Niche creative direction | Loads the matching entry from `niche_prompts.json` for source priorities, story framing, retention beats, and narration delivery. | Five starter profiles: cybersecurity, finance, business, dark history, and future technology. |
 | Asset planning | Converts each scene's visual, music, and SFX needs into provider search requests. Video requests carry the five-second maximum. | `asset_requests.json`, including query, scene, purpose, and candidate-source list. |
-| Asset discovery (`--discover-assets`) | Searches no-key Commons, Internet Archive, Library of Congress, and NASA collections. It adds source candidates and links to the manifest. | `asset_requests.json` updated with `candidates`. |
-| Asset acquisition (`--acquire-assets`) | Reuses matches from the catalog first, then tries Pixabay (if configured) and the public archive adapters. It can generate a clearly labeled illustrative still when no photo matches. It indexes local Audio Library seeds and can try Freesound previews. | `selected_assets.json`; reusable files in shared `assets/` folders; SQLite catalog and JSON sidecars. Unavailable assets are listed under `unresolved`. |
+| Asset discovery (`--discover-assets`) | Searches YouTube for scene-specific candidate videos, uses OpenAI web search for public TikTok links, and searches no-key Commons, Internet Archive, Library of Congress, and NASA collections. Social discovery is capped by `SOCIAL_VIDEO_SEARCHES_PER_RUN` (default 10). | `asset_requests.json` updated with candidate URLs, titles, and source details. |
+| Asset acquisition (`--acquire-assets`) | Reuses matching catalogued video first, then ranks social candidates. yt-dlp downloads one candidate temporarily; OpenAI inspects a timestamped contact sheet and marks a relevant moment; FFmpeg cuts and re-encodes a muted excerpt no longer than five seconds. If social candidates fail, StoryPilot tries Pixabay and video-capable public archives. It never substitutes a generated still for missing footage; misses remain unresolved and block pre-edit readiness. | `selected_assets.json`; retained excerpts in shared `assets/video_clips/`; reusable files in shared `assets/` folders; SQLite catalog and JSON sidecars. Social records include source URL, chosen in/out timecodes, selection rationale, and that source audio was excluded. Unavailable clips are listed under `unresolved`. |
 | Metadata/thumbnails | Writes title hypotheses, description, tags, and two thumbnail briefs. With `--make-thumbnails`, asks OpenAI for two thumbnail images. | `metadata_ab_test.json` plus `thumbnail_1.png` and `thumbnail_2.png` when generation succeeds. |
 | Pre-edit asset check and edit plan | Verifies referenced files, retries missing manifest assets through configured sources, and refuses to render if required assets or captions remain missing. Applies channel style, per-scene direction, and recent per-channel style history. | `edit_readiness.json`; FCPXML, `timeline.json`, `EDIT_NOTES.md`, and updated workspace `style_history.json`. |
 | Final MP4 render and technical QA | Renders locally with FFmpeg; burns English captions, applies shot transitions and text treatments, animates verified chart/counter/route specs, adds slow motion to still images, mixes available narration/music/SFX, and checks duration, audio/video streams, canvas, aspect ratio, and a basic visual-diversity proxy. No upload action exists. | `<job>_long.mp4` or `<job>_short.mp4` in `rendered_outputs/`, plus a QA JSON report. Failed QA leaves a `_qa_failed.mp4` and report. |

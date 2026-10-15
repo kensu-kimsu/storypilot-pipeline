@@ -50,6 +50,32 @@ def _speech_rate(pace: str) -> str:
     return {"slow": "-8%", "measured": "-2%", "brisk": "+5%"}.get(pace, "0%")
 
 
+def _under_100_words(value: int) -> str:
+    small = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+             "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+             "seventeen", "eighteen", "nineteen")
+    tens = ("", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+    if value < 20:
+        return small[value]
+    quotient, remainder = divmod(value, 10)
+    return tens[quotient] if remainder == 0 else f"{tens[quotient]}-{small[remainder]}"
+
+
+def _normalize_clock_times_for_tts(text: str) -> str:
+    """Spell clock notation so local TTS does not read 11:47 as 11,047."""
+    def replace(match: re.Match[str]) -> str:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        spoken_hour = hour % 12 or 12
+        hour_words = _under_100_words(spoken_hour)
+        if minute == 0:
+            return f"{hour_words} o'clock"
+        minute_words = f"oh {_under_100_words(minute)}" if minute < 10 else _under_100_words(minute)
+        return f"{hour_words} {minute_words}"
+
+    return re.sub(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", replace, text)
+
+
 def build_ssml(text: str, *, voice: str, emotion: str = "neutral", tone: str = "",
                pace: str = "measured", intensity: float = 0.5) -> str:
     """Create escaped SSML, applying expressive tags only to MAI Voice models."""
@@ -342,7 +368,7 @@ def synthesize_script(script_path: Path, output_dir: Path, *, voice: str | None 
             chunk_words = []
         else:
             raw = _synthesize_chatterbox_chunk(
-                text, base_url=chatterbox_base_url, emotion=emotion, tone=tone,
+                _normalize_clock_times_for_tts(text), base_url=chatterbox_base_url, emotion=emotion, tone=tone,
                 pace=str(chunk.get("delivery_pace", "measured")),
                 intensity=float(chunk.get("vocal_intensity", chunk.get("intensity", 0.5)) or 0.5),
             )

@@ -18,31 +18,40 @@ MODEL: Any = None
 TORCHAUDIO: Any = None
 REFERENCE_AUDIO: Path | None = None
 DEVICE = "cpu"
+PITCH_SHIFT_SEMITONES = -2.0
 MODEL_LOCK = threading.Lock()
 
 
 def direction_parameters(emotion: str, tone: str, pace: str, intensity: float) -> tuple[float, float]:
-    """Map creative direction to Chatterbox's supported exaggeration/CFG dials."""
-    value = f"{emotion} {tone}".lower()
+    """Map creative direction to deliberately contrasting Chatterbox controls.
+
+    Chatterbox exposes a general exaggeration control, not named emotion
+    classes. Keep neutral delivery restrained and push expressive beats higher
+    so the difference is audible. These are starting points; the model can
+    still interpret a given line subtly.
+    """
+    value = f"{emotion} {tone}".lower().replace("_", " ")
     intensity = max(0.0, min(1.0, intensity))
-    if any(word in value for word in ("fear", "suspense", "tense", "urgent", "shock", "dramatic")):
-        exaggeration = 0.62 + 0.18 * intensity
-    elif any(word in value for word in ("curious", "intrigu", "wonder", "reveal")):
-        exaggeration = 0.52 + 0.18 * intensity
-    elif any(word in value for word in ("sad", "somber", "calm", "reflective")):
-        exaggeration = 0.38 + 0.16 * intensity
-    elif any(word in value for word in ("excited", "energetic", "angry", "forceful")):
-        exaggeration = 0.65 + 0.16 * intensity
+    if any(word in value for word in ("fear", "suspense", "tense", "urgent", "shock", "dramatic", "alarm")):
+        # Leave room for a suspense beat to build across consecutive chunks.
+        # A lower ceiling avoids turning a tense read into a shout.
+        exaggeration = 0.48 + 0.36 * intensity
+    elif any(word in value for word in ("curious", "intrigu", "wonder", "reveal", "anticipat")):
+        exaggeration = 0.56 + 0.30 * intensity
+    elif any(word in value for word in ("sad", "somber", "calm", "reflective", "solemn")):
+        exaggeration = 0.25 + 0.16 * intensity
+    elif any(word in value for word in ("excited", "energetic", "angry", "forceful", "triumphant")):
+        exaggeration = 0.72 + 0.24 * intensity
     else:
-        exaggeration = 0.42 + 0.20 * intensity
+        exaggeration = 0.25 + 0.15 * intensity
     exaggeration = max(0.25, min(0.85, exaggeration))
 
     # Resemble documents lower CFG as a way to temper faster, exaggerated speech.
     # This is a style control, not a precise words-per-minute setting.
     pace = pace.strip().lower()
-    cfg_weight = {"slow": 0.28, "measured": 0.38, "brisk": 0.52}.get(pace, 0.38)
+    cfg_weight = {"slow": 0.28, "measured": 0.42, "brisk": 0.60}.get(pace, 0.42)
     if "suspense" in value or "dramatic" in value:
-        cfg_weight = min(cfg_weight, 0.32)
+        cfg_weight = min(cfg_weight, 0.28)
     return exaggeration, cfg_weight
 
 
@@ -97,6 +106,12 @@ class ChatterboxHandler(BaseHTTPRequestHandler):
                     exaggeration=exaggeration,
                     cfg_weight=cfg_weight,
                 )
+                if PITCH_SHIFT_SEMITONES:
+                    audio = TORCHAUDIO.functional.pitch_shift(
+                        audio.detach(),
+                        sample_rate=MODEL.sr,
+                        n_steps=PITCH_SHIFT_SEMITONES,
+                    )
             buffer = io.BytesIO()
             TORCHAUDIO.save(buffer, audio.detach().cpu(), MODEL.sr, format="wav")
             body = buffer.getvalue()
@@ -105,7 +120,13 @@ class ChatterboxHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-            print(f"[Chatterbox] Synthesized {len(text)} characters; exaggeration={exaggeration:.2f}, cfg={cfg_weight:.2f}", flush=True)
+            print(
+                f"[Chatterbox] emotion={emotion!r} tone={tone!r} pace={pace!r} "
+                f"intensity={intensity:.2f}; synthesized {len(text)} characters; "
+                f"exaggeration={exaggeration:.2f}, cfg={cfg_weight:.2f}, "
+                f"pitch_shift={PITCH_SHIFT_SEMITONES:.1f} semitones",
+                flush=True,
+            )
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             self._json(400, {"error": str(exc)})
         except Exception as exc:  # report details to the server console, not the network client
@@ -118,11 +139,15 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1", help="Bind locally by default; use only localhost")
     parser.add_argument("--port", type=int, default=8090)
     parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
+    parser.add_argument(
+        "--pitch-shift-semitones", type=float, default=-2.0,
+        help="Lower the generated voice pitch while preserving duration; use 0 to disable (suggested range -1 to -3)",
+    )
     parser.add_argument("--reference-audio", type=Path,
                         help="Optional clean voice reference WAV; use only a voice you have permission to use")
     args = parser.parse_args()
 
-    global MODEL, TORCHAUDIO, REFERENCE_AUDIO, DEVICE
+    global MODEL, TORCHAUDIO, REFERENCE_AUDIO, DEVICE, PITCH_SHIFT_SEMITONES
     try:
         import torch
         import torchaudio
@@ -135,6 +160,9 @@ def main() -> None:
     if REFERENCE_AUDIO and not REFERENCE_AUDIO.is_file():
         raise SystemExit(f"Reference WAV not found: {REFERENCE_AUDIO}")
     DEVICE = args.device
+    if not -4.0 <= args.pitch_shift_semitones <= 0.0:
+        raise SystemExit("--pitch-shift-semitones must be between -4 and 0")
+    PITCH_SHIFT_SEMITONES = args.pitch_shift_semitones
     TORCHAUDIO = torchaudio
     print(f"Loading Chatterbox on {DEVICE}; first launch downloads model weights.", flush=True)
     MODEL = ChatterboxTTS.from_pretrained(device=DEVICE)

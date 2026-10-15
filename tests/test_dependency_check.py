@@ -25,6 +25,7 @@ class DependencyCheckTests(unittest.TestCase):
 
     def test_feature_names_include_supported_optional_components(self):
         self.assertEqual(set(dependency_check.FEATURE_REQUIREMENTS), {"maps", "ocr", "portraits", "news"})
+        self.assertIn("yt_dlp", dependency_check.CORE_MODULES)
 
     def test_full_workflow_setup_requests_required_keys_once(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {}, clear=True):
@@ -52,6 +53,27 @@ class DependencyCheckTests(unittest.TestCase):
             with patch("workspace_setup.configure_api_keys") as configure:
                 dependency_check._configure_credentials(args)
             self.assertEqual(configure.call_args.kwargs["required_keys"], ())
+
+    def test_narration_check_requires_only_selected_provider_package(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {}, clear=True):
+            base = Path(temp)
+            args = type("Args", (), {
+                "stage": "narration", "topic_provided": True, "base_dir": base,
+                "features": set(),
+            })()
+
+            def labels_for(provider):
+                (base / ".env").write_text(f"NARRATION_PROVIDER={provider}\n", encoding="utf-8")
+                with patch.object(dependency_check, "_module_available", return_value=False), \
+                        patch.object(dependency_check, "_command_version", return_value=None):
+                    findings, _ = dependency_check._check(args)
+                return {label for label, _ok, _detail in findings}
+
+            chatterbox_labels = labels_for("chatterbox")
+            self.assertNotIn("Python package: azure.cognitiveservices.speech", chatterbox_labels)
+            self.assertNotIn("Python package: ormsgpack", chatterbox_labels)
+            self.assertIn("Python package: azure.cognitiveservices.speech", labels_for("azure"))
+            self.assertIn("Python package: ormsgpack", labels_for("fish"))
 
 
 if __name__ == "__main__":

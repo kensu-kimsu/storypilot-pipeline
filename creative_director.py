@@ -386,6 +386,13 @@ def _editor_note(mode: str, segment: dict) -> str:
 
 def prepare_assets_before_edit(job: dict, job_path: Path, report_path: Path) -> list[dict[str, Any]]:
     """Resolve missing manifest items, then report every item required by edit."""
+    video_suffixes = {".mp4", ".webm", ".ogv", ".mov", ".mkv", ".mpeg", ".mpg"}
+
+    def usable(path: Path | None, category: str | None) -> bool:
+        if not path or not path.is_file() or path.stat().st_size <= 0:
+            return False
+        return category != "video" or path.suffix.lower() in video_suffixes
+
     assets_root = Path(job.get("assets_root") or job_path.parent.parent.parent / "assets").expanduser().resolve()
     requests_to_retry = []
     rows = job.get("asset_requirements", [])
@@ -396,7 +403,7 @@ def prepare_assets_before_edit(job: dict, job_path: Path, report_path: Path) -> 
             continue
         selected = row.get("selected") or {}
         path = Path(selected.get("path", "")) if selected.get("path") else None
-        if path and path.is_file():
+        if usable(path, row.get("category")):
             continue
         category = row.get("category")
         query = str(row.get("query", "")).strip()
@@ -467,13 +474,14 @@ def prepare_assets_before_edit(job: dict, job_path: Path, report_path: Path) -> 
     for row in rows:
         picked = row.get("selected") or {}
         path_value = picked.get("path")
-        exists = bool(path_value and Path(path_value).is_file() and Path(path_value).stat().st_size > 0)
+        path_obj = Path(path_value) if path_value else None
+        exists = usable(path_obj, row.get("category"))
         covered.add(str(row.get("query", "")).strip().lower())
         readiness.append({
             "asset_id": row.get("asset_id"), "query": row.get("query"),
             "category": row.get("category"), "purpose": row.get("purpose"),
             "path": path_value, "source": picked.get("source"), "license": picked.get("license"),
-            "status": "ready" if exists else "missing",
+            "status": "ready" if exists else ("wrong_media_type" if path_obj and path_obj.is_file() and row.get("category") == "video" else "missing"),
         })
     for asset_id in sorted({str(value) for segment in job.get("segments", []) for value in segment.get("asset_ids", [])}):
         asset = job.get("assets", {}).get(asset_id)
@@ -482,7 +490,9 @@ def prepare_assets_before_edit(job: dict, job_path: Path, report_path: Path) -> 
         if not asset:
             status = "missing_manifest_entry"
         elif not exists:
-            status = "missing_file"
+            status = "wrong_media_type" if path_value and Path(path_value).is_file() and asset.get("kind") == "video" else "missing_file"
+        elif asset.get("kind") == "video" and Path(path_value).suffix.lower() not in video_suffixes:
+            status = "wrong_media_type"
         elif asset.get("kind") == "video" and float(asset.get("duration", 0) or 0) <= 0:
             status = "missing_duration"
         else:

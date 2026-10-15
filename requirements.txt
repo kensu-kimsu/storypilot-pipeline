@@ -3,3 +3,4 @@ python-dotenv>=1.0,<2
 azure-cognitiveservices-speech>=1.38,<2
 ormsgpack>=1.10,<2
 Pillow>=10,<13
+yt-dlp>=2025.1.0

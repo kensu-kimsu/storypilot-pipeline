@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 
-from media_library import MediaLibrary, _is_cc0_license
+from media_library import MediaLibrary, _is_cc0_license, acquire_asset_requests
 
 
 class MediaLibraryTests(unittest.TestCase):
@@ -27,6 +27,58 @@ class MediaLibraryTests(unittest.TestCase):
                 self.assertEqual(library.download_pixabay("oil refinery", "picture"), [])
                 self.assertEqual(library.download_pixabay("bank vault", "picture"), [])
             self.assertEqual(client.get.call_count, 1)
+            self.assertEqual(client.get.call_args.kwargs["params"]["per_page"], 3)
+
+    def test_asset_acquisition_falls_back_after_pixabay_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            library = MediaLibrary(Path(temp) / "assets")
+            archive_asset = {"asset_id": "abc", "path": "archive.jpg", "source": "wikimedia_commons"}
+            library.find_reusable = lambda *_args, **_kwargs: []
+            library.download_pixabay = lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("provider unavailable"))
+            library.download_public_archives = lambda *_args, **_kwargs: [archive_asset]
+            result = acquire_asset_requests({"assets": [{"category": "picture", "query": "company headquarters"}]}, library)
+            self.assertEqual(len(result["assets"]), 1)
+            self.assertEqual(result["assets"][0]["selected"]["source"], "wikimedia_commons")
+            self.assertEqual(result["unresolved"], [])
+
+    def test_video_request_never_falls_back_to_generated_still(self):
+        with tempfile.TemporaryDirectory() as temp:
+            library = MediaLibrary(Path(temp) / "assets")
+            library.find_reusable = lambda *_args, **_kwargs: []
+            library.download_pixabay = lambda *_args, **_kwargs: []
+            library.download_public_archives = lambda *_args, **_kwargs: []
+            library.generate_image = MagicMock(return_value={"path": "fake.png"})
+            result = acquire_asset_requests({"assets": [{"asset_id": "v1", "category": "video", "query": "Vanguard trading floor"}]}, library)
+            self.assertEqual(result["assets"], [])
+            self.assertEqual(result["unresolved"][0]["status"], "no_video_clip_match_in_configured_sources")
+            library.generate_image.assert_not_called()
+
+    def test_asset_acquisition_uses_social_candidate_and_stores_selected_timecodes(self):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {}, clear=True):
+            library = MediaLibrary(Path(temp) / "assets")
+            library.find_reusable = lambda *_args, **_kwargs: []
+            library.download_pixabay = MagicMock(return_value=[])
+            library.download_public_archives = MagicMock(return_value=[])
+            candidate = {"source": "youtube", "url": "https://www.youtube.com/watch?v=abc", "title": "Factory"}
+            details = {"segment_start_seconds": 2.0, "segment_end_seconds": 7.0,
+                       "duration": 5.0, "source_audio_included": False}
+            library.download_social_candidate = lambda _candidate, _request: library._register(
+                b"selected video", category="video", title="Factory", tags=["factory"],
+                source="youtube", source_url=candidate["url"], ext=".mp4", duration=5.0, metadata=details)
+            result = acquire_asset_requests({"assets": [{"asset_id": "v1", "category": "video",
+                "query": "active factory machines", "purpose": "Show industrial movement",
+                "max_duration_seconds": 5, "candidates": [candidate]}]}, library)
+            selected = result["assets"][0]["selected"]
+            self.assertEqual(selected["source"], "youtube")
+            self.assertEqual(selected["metadata"]["segment_end_seconds"] - selected["metadata"]["segment_start_seconds"], 5)
+            library.download_pixabay.assert_not_called()
+
+    def test_catalog_never_reuses_png_as_video(self):
+        with tempfile.TemporaryDirectory() as temp:
+            library = MediaLibrary(Path(temp) / "assets")
+            bad = library._register(b"not really a clip", category="video", title="Vanguard trading",
+                                    tags=["Vanguard", "trading"], source="test", source_url="", ext=".png")
+            self.assertEqual(library.find_reusable("Vanguard trading", category="video"), [])
 
     def test_categories_deduplicate_and_reuse_by_tags(self):
         with tempfile.TemporaryDirectory() as temp:

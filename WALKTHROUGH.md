@@ -39,10 +39,12 @@ Omit `--topic` to let StoryPilot discover candidate topics, compare them with `h
 
 1. **Research:** OpenAI gathers sourced factual claims. A separate verification pass checks them and stops the script stage if no claims pass.
 2. **Script and creative direction:** the script uses verified claims only, builds a retention arc, and tags each narration chunk with tone, energy, a visual mode, specific evidence to show, rationale, asset searches, music mood, and sound-effect cues.
-3. **Topic-specific media requests:** the program writes asset search requests. With `--discover-assets` and `--acquire-assets`, it searches the configured providers, reuses catalogued material where appropriate, and records available source/license metadata.
+3. **Topic-specific media requests:** the program writes scene-by-scene search requests from the script. With `--discover-assets`, it searches YouTube and public archives, then uses OpenAI web search to find public TikTok links. With `--acquire-assets`, it ranks candidates, downloads a selected social video temporarily with yt-dlp, sends a timestamped contact sheet to OpenAI to select a relevant moment, and uses FFmpeg to save only a muted excerpt up to five seconds. Pixabay and public archives are fallback video sources.
 4. **Packaging:** it creates title/description/tag hypotheses and two thumbnail concepts. `--make-thumbnails` also attempts to create the two image files.
 
-The job folder is `D:\YouTubeProduction\jobs\<channel-topic>\`. Expect `research.json`, `script.json`, `asset_requests.json`, `metadata_ab_test.json`, and `job.json`; asset downloads and generated thumbnails appear when requested and available. Any unresolved media is recorded for follow-up.
+The job folder is `D:\YouTubeProduction\jobs\<channel-topic>\`. Expect `research.json`, `script.json`, `asset_requests.json`, `selected_assets.json`, `metadata_ab_test.json`, and `job.json`; downloaded excerpts are stored for reuse in `assets/video_clips/`. Social-video records include source URL, AI-selected in/out timecodes, visual rationale, and a note that original audio was stripped. Any unresolved media is listed in `selected_assets.json` and blocks edit readiness.
+
+For social video candidates, YouTube search uses `YOUTUBE_API_KEY`. TikTok search uses OpenAI web search and can only find pages indexed by the search engine; it is not TikTok's in-app search feed. yt-dlp and FFmpeg must be installed and available to the same Python environment/PATH. The full candidate download is temporary. If a candidate cannot be downloaded or AI finds no visually relevant moment, StoryPilot tries the next candidate and then Pixabay/archive footage. It does not download private/login-gated/DRM-protected videos or use browser cookies.
 
 ## 3. Set up the channel's visual identity once
 

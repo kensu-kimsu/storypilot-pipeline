@@ -11,6 +11,7 @@ import wave
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from azure_tts import (
     _estimated_word_boundaries,
+    _normalize_clock_times_for_tts,
     _synthesize_chatterbox_chunk,
     _synthesize_fish_chunk,
     build_ssml,
@@ -25,11 +26,22 @@ import chatterbox_server
 
 
 class AzureTtsTests(unittest.TestCase):
+    def test_chatterbox_clock_time_is_spoken_as_words(self):
+        self.assertEqual(
+            _normalize_clock_times_for_tts("At 11:47, the alarm sounded."),
+            "At eleven forty-seven, the alarm sounded.",
+        )
+
     def test_chatterbox_direction_maps_to_bounded_delivery_controls(self):
+        suspense_start = direction_parameters("fearful", "suspense", "slow", 0.25)
         dramatic = direction_parameters("fearful", "suspense", "slow", 0.9)
         neutral = direction_parameters("neutral", "standard", "measured", 0.5)
-        self.assertGreater(dramatic[0], neutral[0])
+        somber = direction_parameters("somber", "reflective", "slow", 0.4)
+        self.assertLess(suspense_start[0], dramatic[0])
+        self.assertGreaterEqual(dramatic[0] - neutral[0], 0.45)
         self.assertLessEqual(dramatic[0], 0.85)
+        self.assertLessEqual(neutral[0], 0.4)
+        self.assertLessEqual(somber[0], 0.4)
         self.assertLess(dramatic[1], neutral[1])
 
     def test_chatterbox_client_posts_delivery_direction_and_returns_wav(self):
@@ -48,6 +60,8 @@ class AzureTtsTests(unittest.TestCase):
         self.assertEqual(call.kwargs["json"]["intensity"], 0.8)
 
     def test_chatterbox_bridge_tts_http_contract(self):
+        pitch_calls = []
+
         class DummyAudio:
             def detach(self):
                 return self
@@ -61,6 +75,12 @@ class AzureTtsTests(unittest.TestCase):
                 return DummyAudio()
 
         class DummyTorchAudio:
+            class functional:
+                @staticmethod
+                def pitch_shift(audio, *, sample_rate, n_steps):
+                    pitch_calls.append((sample_rate, n_steps))
+                    return audio
+
             @staticmethod
             def save(fileobj, _audio, sample_rate, format):
                 with wave.open(fileobj, "wb") as wav:
@@ -87,11 +107,13 @@ class AzureTtsTests(unittest.TestCase):
                 self.send_response(status)
                 self.wfile.write(json.dumps(data).encode("utf-8"))
 
-        old = chatterbox_server.MODEL, chatterbox_server.TORCHAUDIO, chatterbox_server.REFERENCE_AUDIO
+        old = (chatterbox_server.MODEL, chatterbox_server.TORCHAUDIO,
+               chatterbox_server.REFERENCE_AUDIO, chatterbox_server.PITCH_SHIFT_SEMITONES)
         model = DummyModel()
         chatterbox_server.MODEL = model
         chatterbox_server.TORCHAUDIO = DummyTorchAudio
         chatterbox_server.REFERENCE_AUDIO = None
+        chatterbox_server.PITCH_SHIFT_SEMITONES = -2.0
         try:
             request_data = json.dumps({
                 "text": "The secret changed everything.", "emotion": "fearful", "tone": "suspense",
@@ -105,12 +127,14 @@ class AzureTtsTests(unittest.TestCase):
             self.assertTrue(fake.wfile.getvalue().startswith(b"RIFF"))
             self.assertEqual(model.last_call[0], "The secret changed everything.")
             self.assertGreater(model.last_call[1]["exaggeration"], 0.6)
+            self.assertEqual(pitch_calls, [(24000, -2.0)])
             health = FakeHandler()
             health.path = "/v1/health"
             chatterbox_server.ChatterboxHandler.do_GET(health)
             self.assertEqual(json.loads(health.wfile.getvalue())["provider"], "chatterbox")
         finally:
-            chatterbox_server.MODEL, chatterbox_server.TORCHAUDIO, chatterbox_server.REFERENCE_AUDIO = old
+            (chatterbox_server.MODEL, chatterbox_server.TORCHAUDIO,
+             chatterbox_server.REFERENCE_AUDIO, chatterbox_server.PITCH_SHIFT_SEMITONES) = old
 
     def test_emotion_tags_map_to_supported_expressive_styles(self):
         self.assertEqual(emotion_to_style("fearful curiosity"), "fearful")

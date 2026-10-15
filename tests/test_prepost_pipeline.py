@@ -10,6 +10,7 @@ from prepost_pipeline import (
     get_niche_config,
     is_duplicate,
     qa_package,
+    search_asset_sources,
     validate_graphic_spec,
     verify_research_claims,
     write_script,
@@ -17,6 +18,21 @@ from prepost_pipeline import (
 
 
 class PrePostPipelineTests(unittest.TestCase):
+    def test_asset_discovery_combines_social_candidates_with_archive_candidates(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            job = root / "jobs" / "test"
+            job.mkdir(parents=True)
+            manifest_path = job / "asset_requests.json"
+            manifest_path.write_text(json.dumps({"assets": [{"asset_id": "v1", "category": "video", "query": "factory machinery"}]}), encoding="utf-8")
+            social = [{"source": "tiktok", "url": "https://www.tiktok.com/@maker/video/123", "title": "Factory"}]
+            with patch("media_library.MediaLibrary.search_public_archives", return_value=[{"source": "nasa_images", "source_url": "https://nasa.gov/item"}]), \
+                    patch("social_video.discover_social_videos", return_value=social):
+                result = search_asset_sources(manifest_path)
+            candidates = result["assets"][0]["candidates"]
+            self.assertEqual([item["source"] for item in candidates], ["tiktok", "nasa_images"])
+            self.assertTrue(result["assets"][0]["social_search_performed"])
+
     def test_graphic_specs_accept_only_values_linked_to_scene_claims(self):
         claims = [{"claim_id": "C1", "claim": "Revenue rose from 2.0 billion dollars in 2019 to 2.5 billion dollars in 2020."}]
         chunk = {"claim_ids": ["C1"], "visual_mode": "animated_chart"}
@@ -149,10 +165,36 @@ class PrePostPipelineTests(unittest.TestCase):
                 "music_mood": "low tension orchestral", "sfx_cues": ["paper rustle", "deep impact"]
             }]}, Path(temp))
             categories = [asset["category"] for asset in manifest["assets"]]
-            self.assertEqual(categories, ["video", "picture", "music", "sfx", "sfx"])
+            self.assertEqual(categories, ["video", "video", "music", "sfx", "sfx"])
             self.assertEqual(manifest["assets"][0]["max_duration_seconds"], 5)
             self.assertEqual(manifest["assets"][0]["visual_mode"], "document_focus")
             self.assertEqual(manifest["assets"][0]["visual_evidence"], "A dated refinery expansion record")
+
+    def test_video_asset_brief_separates_urls_from_search_text(self):
+        with tempfile.TemporaryDirectory() as temp:
+            manifest = asset_research({"narration_chunks": [{
+                "section_title": "Vanguard's low-cost model",
+                "visual_evidence": "Vanguard opened an investor-owned fund in 1975",
+                "asset_queries": ["https://example.org/news/vanguard-fund-1975"],
+            }]}, Path(temp))
+            video = manifest["assets"][0]
+            self.assertEqual(video["category"], "video")
+            self.assertNotIn("http", video["query"])
+            self.assertIn("vanguard", video["query"].lower())
+            self.assertEqual(video["reference_urls"], ["https://example.org/news/vanguard-fund-1975"])
+            self.assertLessEqual(len(video["query"]), 100)
+
+    def test_package_qa_blocks_unresolved_video_and_still_masquerading_as_clip(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "selected_assets.json").write_text(json.dumps({
+                "assets": [{"asset_id": "a1", "category": "video", "selected": {"path": str(root / "still.png")}}],
+                "unresolved": [{"asset_id": "a2", "category": "video", "query": "factory footage"}],
+            }))
+            (root / "still.png").write_bytes(b"still")
+            issues = qa_package(root)
+            self.assertTrue(any("non-video file" in issue for issue in issues))
+            self.assertTrue(any("unresolved" in issue and "factory footage" in issue for issue in issues))
 
     def test_news_headline_search_is_skipped_when_creative_brief_does_not_request_it(self):
         with tempfile.TemporaryDirectory() as temp:
