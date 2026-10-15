@@ -1,3 +1,4 @@
+import io
 import json
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from prepost_pipeline import (
+    _ConsoleProgress,
     create_thumbnail_from_reference,
     make_metadata,
     resolve_thumbnail_reference,
@@ -23,6 +25,20 @@ from prepost_pipeline import (
 
 
 class PrePostPipelineTests(unittest.TestCase):
+    def test_progress_dashboard_shows_subtask_and_clears_wrapped_status(self):
+        progress = _ConsoleProgress()
+        progress.stop_event.set()
+        progress.thread.join(timeout=0.2)
+        progress.update_subtask("Downloading video from Pixabay")
+        output = io.StringIO()
+        with patch("prepost_pipeline.sys.stdout", output), \
+                patch("prepost_pipeline.shutil.get_terminal_size", return_value=unittest.mock.Mock(columns=120)):
+            progress.render()
+        rendered = output.getvalue()
+        self.assertIn("\x1b[2K\r", rendered)
+        self.assertIn("Downloading video from Pixabay", rendered)
+        self.assertLessEqual(len(rendered.replace("\x1b[2K\r", "")), 120)
+
     def test_metadata_requests_and_keeps_only_one_thumbnail_brief(self):
         reply = {"output_text": json.dumps({
             "title_variants": [{"title": "A", "hypothesis": "A"}, {"title": "B", "hypothesis": "B"}, {"title": "C", "hypothesis": "C"}],
