@@ -119,7 +119,7 @@ class MediaLibrary:
         temp.write_text(json.dumps(cache, indent=2, ensure_ascii=False), encoding="utf-8")
         temp.replace(self.request_cache_path)
 
-    def _register(self, data: bytes, *, category: str, title: str, tags: list[str], source: str,str,
+    def _register(self, data: bytes, *, category: str, title: str, tags: list[str], source: str,
                   source_url: str, license_name: str | None = None, creator: str | None = None,
                   duration: float | None = None, ext: str = ".bin", metadata: dict | None = None) -> dict:
         if category not in FOLDERS:
