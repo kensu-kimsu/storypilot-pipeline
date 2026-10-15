@@ -150,7 +150,7 @@ def get_niche_config(niche: str, prompts_file: Path | None = None) -> dict:
         "default_search_fallback": "documentary topic",
         "research_prompt": "Prioritise primary documents, reputable reporting, and independent corroboration. Flag uncertainty and conflicting accounts.",
         "system_prompt": "Tell a clear, evidence-led story with a strong beginning, a logical build, and a satisfying factual conclusion.",
-        "retention_guidance": "Use meaningful discoveries and payoffs to maintain curiosity throughout; do not invent suspense.",
+        "retention_guidance": "Use meaningful discoveries and pay off key questions to maintain curiosity; do not invent suspense.",
     }
 
 
