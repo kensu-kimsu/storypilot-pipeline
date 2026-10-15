@@ -807,9 +807,9 @@ def search_asset_sources(ledger_path: Path, *, max_results: int = 3) -> dict:
 
 
 def make_metadata(topic: str, channel: dict, script: dict) -> dict:
-    prompt = f"""Create truthful YouTube packaging for this documentary. No unsupported promise, false urgency, or claim beyond the script.
+    prompt = f"""Create truthful YouTube packaging for this documentary. No unsupported promise, false urgency, or claim beyond the verified story.
 Topic: {topic}; channel: {channel.get('name', channel.get('handle'))}.
-Script summary: {script.get('logline')}\nReturn strict JSON {{"title_variants":[{{"title":"...","hypothesis":"..."}} x 3],"description":"...","tags":["..."],"thumbnail_briefs":[{{"concept":"...","composition":"...","text":"optional, 0-3 words","contrast_angle":"..."}}]}} with exactly ONE thumbnail brief. Keep title variants distinct hypotheses. The thumbnail should make the story legible at phone size and create a truthful curiosity gap without repeating the title."""
+Script summary: {script.get('logline')}\nReturn strict JSON {{"title_variants":[{{"title":"...","hypothesis":"..."}} x 3],"description":"...","tags":["..."],"thumbnail_briefs":[{{"subject":"specific recognizable person, brand, or company from this story","subject_type":"person|brand|company","recognition_cues":"distinctive verified appearance, product, colors, or logo","concept":"...","composition":"...","text":"optional, 0-3 words","contrast_angle":"..."}}]}} with exactly ONE thumbnail brief. Choose a recognizable named person, brand, or company central to the story as the main focal subject. Do not substitute a generic silhouette if an actual subject is identifiable from the topic and script. Keep title variants distinct hypotheses. The thumbnail should read on a phone and create a truthful curiosity gap without repeating the title."""
     data = parse_json_text(response_text(openai_response(prompt)))
     data["thumbnail_briefs"] = data.get("thumbnail_briefs", [])[:1]
     data["testing_note"] = "For native YouTube test, use YouTube Studio's concurrent test when available. Do not sequentially swap manually and call it a controlled A/B test. API support for starting the native experiment is not assumed."
@@ -818,11 +818,15 @@ Script summary: {script.get('logline')}\nReturn strict JSON {{"title_variants":[
 
 def build_thumbnail_prompt(topic: str, concept: dict) -> str:
     """Turn the thumbnail brief into a simple, factual, phone-readable image prompt."""
+    subject = concept.get("subject", topic)
+    subject_type = concept.get("subject_type", "person, brand, or company")
     return f"""Create one high-CTR YouTube documentary thumbnail about: {topic}.
+Recognizable main subject: {subject} ({subject_type}).
+Verified recognition cues: {concept.get('recognition_cues', '')}
 Story idea: {concept.get('concept', '')}
 Composition direction: {concept.get('composition', '')}
 Curiosity angle: {concept.get('contrast_angle', '')}
-Visual blueprint: use exactly three clear elements at most—(1) one large, unmistakable focal subject, (2) one atmospheric context background, and (3) at most one story clue or mystery object. Make the subject dominant and readable at phone size, with strong light-dark contrast, cinematic directional or rim lighting, restrained color accents, subtle depth, and a gentle vignette. Keep the focal subject inside the central 16:9 crop-safe area; leave uncluttered negative space for optional short overlay text ({concept.get('text', '')}) but do not render any words or letters. Use a low-detail background. The image must fit the verified story and must not invent evidence, events, statistics, headlines, logos, or realistic depictions of real people. Prefer a symbolic object or neutral silhouette when a real person is not essential. No collage, no extra props, no tiny details, no watermark. Compose for a 16:9 YouTube thumbnail; the supplied image will be center-cropped to 16:9."""
+Visual blueprint: use exactly three clear elements at most—(1) one large, unmistakable, recognizable main subject, (2) one atmospheric context background, and (3) at most one story clue or mystery object. Render the named person, brand, or company as the dominant focal subject, using its verified distinctive appearance, product, colors, or logo when supplied. Do not replace it with a generic silhouette. For a real person, make a respectful, recognizable likeness; do not depict them doing anything unsupported by the story. For a company or brand, use its correct identity and do not invent or misspell a logo. Make the subject dominant and readable at phone size, with strong light-dark contrast, cinematic directional or rim lighting, restrained color accents, subtle depth, and a gentle vignette. Keep the subject inside the central 16:9 crop-safe area; leave uncluttered negative space for optional short overlay text ({concept.get('text', '')}) but do not render any words or letters. Use a low-detail background. The image must fit the verified story and must not invent evidence, events, statistics, headlines, or misleading actions. No collage, no extra props, no tiny details, no watermark. Compose for a 16:9 YouTube thumbnail; the supplied image will be center-cropped to 16:9."""
 
 
 def generate_thumbnail(prompt: str, path: Path, *, size: str = "1536x1024") -> bool:
