@@ -1,10 +1,18 @@
+import base64
+import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+
 from prepost_pipeline import (
+    build_thumbnail_prompt,
+    generate_thumbnail,
+    make_metadata,
     asset_research,
     fulfill_news_headline_requests,
     get_niche_config,
@@ -18,6 +26,57 @@ from prepost_pipeline import (
 
 
 class PrePostPipelineTests(unittest.TestCase):
+    def test_metadata_requests_and_keeps_only_one_thumbnail_brief(self):
+        reply = {"output_text": json.dumps({
+            "title_variants": [{"title": "A", "hypothesis": "A"}, {"title": "B", "hypothesis": "B"}, {"title": "C", "hypothesis": "C"}],
+            "description": "Desc", "tags": [],
+            "thumbnail_briefs": [
+                {"concept": "A vault key", "composition": "large key", "text": "THE KEY", "contrast_angle": "hidden ownership"},
+                {"concept": "A second idea", "composition": "fund", "text": "", "contrast_angle": "other"},
+            ],
+        })}
+        captured = {}
+        def fake_response(prompt, **kwargs):
+            captured["prompt"] = prompt
+            return reply
+        with patch("prepost_pipeline.openai_response", side_effect=fake_response):
+            result = make_metadata("Vanguard story", {"name": "Business Untold"}, {"logline": "A fund changed ownership."})
+        self.assertIn("exactly ONE thumbnail brief", captured["prompt"])
+        self.assertEqual(len(result["thumbnail_briefs"]), 1)
+        self.assertEqual(result["thumbnail_briefs"][0]["concept"], "A vault key")
+
+    def test_thumbnail_prompt_applies_simple_curiosity_gap_rules(self):
+        prompt = build_thumbnail_prompt("Vanguard story", {
+            "concept": "A vault key beside a fund certificate",
+            "composition": "One large brass key, off-center",
+            "contrast_angle": "investor ownership",
+            "text": "WHO OWNS IT?",
+        })
+        self.assertIn("exactly three clear elements at most", prompt)
+        self.assertIn("truthful story", prompt)
+        self.assertIn("do not render any words or letters", prompt)
+        self.assertIn("central 16:9 crop-safe area", prompt)
+
+    def test_thumbnail_generation_outputs_one_center_cropped_1280x720_png(self):
+        image_buffer = io.BytesIO()
+        Image.new("RGB", (1536, 1024), color=(10, 20, 30)).save(image_buffer, format="PNG")
+        encoded = base64.b64encode(image_buffer.getvalue()).decode("ascii")
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {"data": [{"b64_json": encoded}]}
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"OPENAI_API_KEY": "test"}):
+            output = Path(temp) / "thumbnail_1.png"
+            with patch("prepost_pipeline.HTTP.post", return_value=FakeResponse()) as post:
+                self.assertTrue(generate_thumbnail("simple, high-contrast thumbnail", output))
+            self.assertEqual(post.call_args.kwargs["json"]["n"], 1)
+            with Image.open(output) as rendered:
+                self.assertEqual(rendered.size, (1280, 720))
+                self.assertEqual(rendered.format, "PNG")
+
     def test_asset_discovery_combines_social_candidates_with_archive_candidates(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
