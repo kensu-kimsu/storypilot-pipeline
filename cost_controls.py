@@ -44,6 +44,12 @@ def resolve_model(stage: str, explicit_model: str | None = None) -> str:
     return os.getenv(env_name, "").strip() or os.getenv("OPENAI_MODEL", "").strip() or "gpt-5"
 
 
+def fallback_model_env(stage: str) -> str:
+    """Return the matching fallback setting, honoring legacy stage aliases."""
+    env_name = STAGE_MODEL_ENV.get(stage, f"OPENAI_MODEL_{stage.upper()}")
+    return f"{env_name}_FALLBACK"
+
+
 def signature(payload: Any) -> str:
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
