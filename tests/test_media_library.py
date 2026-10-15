@@ -17,6 +17,10 @@ class MediaLibraryTests(unittest.TestCase):
         music = asset_search_variants("subtle tension, sparse piano", "music")
         self.assertIn("suspense underscore", music)
         self.assertIn("sparse piano underscore", music)
+        digital = asset_search_variants("soft digital blip for secondary market", "sfx")
+        self.assertIn("computer notification sound", digital[:6])
+        marker = asset_search_variants("highlighter swipe", "sfx")
+        self.assertIn("marker writing on paper", marker[:6])
 
     def test_cc0_filter_accepts_only_cc0_labels(self):
         self.assertTrue(_is_cc0_license("Creative Commons 0"))

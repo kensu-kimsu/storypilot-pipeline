@@ -290,6 +290,9 @@ class PrePostPipelineTests(unittest.TestCase):
         self.assertIn("Montserrat", captured["prompt"])
         self.assertIn("English", captured["prompt"])
         self.assertIn("generated_media_required", captured["prompt"])
+        self.assertIn("write music_mood as a short, literal search phrase", captured["prompt"])
+        self.assertIn("marker writing on paper", captured["prompt"])
+        self.assertIn("electronic notification beep", captured["prompt"])
         self.assertEqual(result["voice_name"], "en-US-Ethan:MAI-Voice-2.1")
         self.assertEqual(result["visual_brand"], channel["visual_brand"])
         self.assertFalse(result["narration_audio_generated"])
@@ -325,6 +328,8 @@ class PrePostPipelineTests(unittest.TestCase):
             self.assertEqual(manifest["assets"][0]["max_duration_seconds"], 5)
             self.assertEqual(manifest["assets"][0]["visual_mode"], "document_focus")
             self.assertEqual(manifest["assets"][0]["visual_evidence"], "A dated refinery expansion record")
+            self.assertIn("Freesound API", manifest["assets"][2]["suggested_sources"])
+            self.assertEqual(manifest["assets"][2]["download_status"], "search_freesound_or_local_catalog")
 
     def test_video_asset_brief_separates_urls_from_search_text(self):
         with tempfile.TemporaryDirectory() as temp:

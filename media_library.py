@@ -78,6 +78,8 @@ def asset_search_variants(query: str, category: str) -> list[str]:
             (r"shutter|camera", ["camera shutter", "camera click"]),
             (r"impact|hit|thud|bang|slam", ["cinematic impact", "soft impact sound effect"]),
             (r"ambience|atmosphere|room tone|wind|rain", ["ambient room tone", "documentary atmosphere"]),
+            (r"digital|blip|beep|notification|alert", ["electronic beep", "computer notification sound", "short digital beep", "interface beep"]),
+            (r"highlighter|marker|swipe|underline|highlight", ["marker writing on paper", "felt tip marker squeak", "pen writing on paper", "paper rustling"]),
         ]
     elif category == "music":
         rules = [
