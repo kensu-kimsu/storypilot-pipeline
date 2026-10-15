@@ -51,12 +51,15 @@ def _write(path: Path, value: Any) -> None:
 
 
 class _ConsoleProgress:
-    """Live console bar with a rough, dynamically scaled time estimate."""
+    """Live main and indeterminate subtask bars for long-running stages."""
     def __init__(self, estimated_total_seconds: float = 900.0):
         self.started = time.monotonic()
         self.estimated_total = estimated_total_seconds
         self.percent = 0.0
         self.label = "Starting preproduction"
+        self.subtask = "Preparing"
+        self.subtask_started = self.started
+        self.frame = 0
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._heartbeat, daemon=True)
@@ -77,6 +80,16 @@ class _ConsoleProgress:
         with self.lock:
             self.label = message[:36]
             self.percent = max(self.percent, min(100.0, percent))
+            self.subtask = "Preparing next step"
+            self.subtask_started = time.monotonic()
+        self.render()
+
+    def update_subtask(self, message: str) -> None:
+        """Show the current operation without pretending to know its percent."""
+        with self.lock:
+            if message != self.subtask:
+                self.subtask = message[:64]
+                self.subtask_started = time.monotonic()
         self.render()
 
     def render(self) -> None:
@@ -85,14 +98,35 @@ class _ConsoleProgress:
             percent = self.percent
             expected = self.estimated_total
             label = self.label
+            subtask = self.subtask
+            subtask_elapsed = time.monotonic() - self.subtask_started
+            frame = self.frame
+            self.frame += 1
         nominal_done = expected * percent / 100.0
         scale = min(2.5, max(0.5, elapsed / nominal_done)) if nominal_done >= 20 else 1.0
         remaining = expected * (1.0 - percent / 100.0) * scale
-        filled = int(20 * percent / 100.0)
-        bar = "=" * filled + " " * (20 - filled)
-        status = (f"\r[StoryPilot] [{bar}] {percent:5.1f}% | elapsed {self._duration(elapsed)} "
-                  f"| ETA ~{self._duration(remaining)} | {label}")
-        sys.stdout.write(status[:120].ljust(120))
+        filled = int(12 * percent / 100.0)
+        main_bar = "=" * filled + " " * (12 - filled)
+        phase = frame % 14
+        phase = phase if phase <= 7 else 14 - phase
+        sub_bar = "[" + "." * phase + "===" + "." * (7 - phase) + "]"
+
+        def compact(seconds: float) -> str:
+            seconds = max(0, int(seconds))
+            minutes, seconds = divmod(seconds, 60)
+            return f"{minutes}m{seconds:02d}s"
+
+        # Leave one terminal column unused to avoid auto-wrap. Once a line
+        # wraps, carriage return alone cannot return to its first row.
+        columns = shutil.get_terminal_size((120, 24)).columns
+        width = max(40, columns - 1)
+        overall = (f"[StoryPilot] [{main_bar}] {percent:4.0f}% | {compact(elapsed)} "
+                   f"| ETA {compact(remaining)} | {label[:12]}")
+        tail_prefix = f" | {sub_bar} "
+        tail_suffix = f" +{compact(subtask_elapsed)}" if width >= 150 else ""
+        available = max(0, width - len(overall) - len(tail_prefix) - len(tail_suffix))
+        status = overall + tail_prefix + subtask[:available] + tail_suffix
+        sys.stdout.write("\x1b[2K\r" + status[:width].ljust(width))
         sys.stdout.flush()
 
     def _heartbeat(self) -> None:
@@ -131,6 +165,12 @@ def _progress(message: str, percent: float | None = None) -> None:
     if _RUN_PROGRESS is not None:
         _RUN_PROGRESS.update(message, percent)
     print(f"\n[StoryPilot] {message}", flush=True)
+
+
+def _subprogress(message: str) -> None:
+    """Update the animated subtask bar during a blocking operation."""
+    if _RUN_PROGRESS is not None:
+        _RUN_PROGRESS.update_subtask(message)
 
 
 def _slug(text: str) -> str:
@@ -462,6 +502,7 @@ Use web search. Build a source-backed evidence ledger for a 20-minute documentar
 Niche research guidance: {niche_config.get('research_prompt', '')}
 Return strict JSON: {{"research_brief":"...","claims":[{{"claim_id":"C1","claim":"one checkable factual claim","source_title":"...","url":"https://...","publisher":"...","published_or_accessed":"...","source_type":"primary|official|academic|reporting|archive|other","support":"short paraphrase of the relevant evidence","confidence":"high|medium|low","caveat":"qualification or empty string","geo_points":[{{"name":"place name in the claim","latitude":0.0,"longitude":0.0,"source_url":"direct URL supporting these coordinates"}}]}}],"open_questions":["..."]}}.
 The brief may contain only claims represented in the ledger. Prioritise original records over summaries and flag conflicting evidence explicitly."""
+    _subprogress("Research: OpenAI web search and source collection")
     response = openai_response(prompt, web_search=True, stage="research")
     data = parse_json_text(response_text(response))
     data["search_response_id"] = response.get("id")
@@ -484,6 +525,7 @@ Use web search to inspect the cited source and seek independent corroboration. C
 Claims: {json.dumps(claims, ensure_ascii=False)}
 Return strict JSON: {{"results":[{{"claim_id":"C1","status":"verified|qualified|unverified|disputed","verification_note":"what the sources support or fail to support","checked_sources":[{{"title":"...","url":"...","support":"short evidence summary"}}],"checked_geo_points":[{{"name":"...","latitude":0.0,"longitude":0.0,"source_url":"https://..."}}]}}]}}.
 Provide at least one checked source for each verified or qualified claim. Do not invent source URLs."""
+    _subprogress("Fact-check: checking claims against sources")
     response = openai_response(prompt, web_search=True, stage="verification")
     checked = parse_json_text(response_text(response)).get("results", [])
     by_id = {str(item.get("claim_id")): item for item in checked if item.get("claim_id")}
@@ -700,6 +742,7 @@ Add optional `graphic_spec` for evidence-backed graphics only. Charts use 2-6 it
 For each narration chunk, decide whether a real news headline is creatively necessary. Normally set "news_article_screenshot": null. Request one only when an actual news headline materially strengthens the scene (for example, showing contemporaneous media coverage of a major event). Do not request generic headlines or decorative screenshots; request at most two total. When needed, set {{"search_query":"specific article/story query","highlight_keywords":["one or two exact headline terms"],"reason":"why the headline itself helps this scene"}}.
 Research ledger (only these verified claims may support factual narration): {json.dumps(claims, ensure_ascii=False)}
 Return strict JSON {{"title_working":"...","logline":"...","narration_direction":"...","voice_name":"{voice_name}","narration_chunks":[{{"section_title":"...","text":"...","claim_ids":["C1"],"tone":"...","delivery_emotion":"...","delivery_pace":"measured|brisk|slow","vocal_intensity":0.5,"pause_after_seconds":0.5,"audio_energy":0.5,"retention_function":"...","visual_mode":"one allowed mode","visual_evidence":"specific verified story detail to show","visual_rationale":"why this treatment fits the beat","visual_note":"...","asset_queries":["scene-specific real video footage search phrase"],"reference_urls":[],"parallax_assets":{{"portrait_query":"...","background_query":"...","generated_media_required":false}}|null,"graphic_spec":null,"news_article_screenshot":null,"music_mood":"...","sfx_cues":["..."]}}],"shorts_script":{{"text":"standalone complete 30-second short, about 60-75 words","hook":"...","payoff":"...","claim_ids":["C1"],"narration_direction":"..."}}}}."""
+    _subprogress("Script: waiting for OpenAI to draft narration")
     script = parse_json_text(response_text(openai_response(prompt, stage="scripting")))
     graphic_issues = []
     for index, chunk in enumerate(script.get("narration_chunks", []), 1):
@@ -833,6 +876,7 @@ def make_metadata(topic: str, channel: dict, script: dict) -> dict:
     prompt = f"""Create truthful YouTube packaging for this documentary. No unsupported promise, false urgency, or claim beyond the verified story.
 Topic: {topic}; channel: {channel.get('name', channel.get('handle'))}.
 Script summary: {script.get('logline')}\nReturn strict JSON {{"title_variants":[{{"title":"...","hypothesis":"..."}} x 3],"description":"...","tags":["..."],"thumbnail_briefs":[{{"subject":"specific recognizable person, brand, or company from this story","subject_type":"person|brand|company","recognition_cues":"distinctive verified appearance, product, colors, or logo","concept":"...","composition":"...","text":"2-3 word curiosity hook, not the title","contrast_angle":"..."}}]}} with exactly ONE thumbnail brief. Choose a recognizable named person, brand, or company central to the story as the main focal subject. Do not substitute a generic silhouette if an actual subject is identifiable from the topic and script. The actual source image will be placed in the thumbnail directly, so select a subject that can be found in Wikimedia Commons or another public image archive. Keep title variants distinct hypotheses. The thumbnail should read on a phone and create a truthful curiosity gap without repeating the title."""
+    _subprogress("Packaging: writing titles and thumbnail brief")
     data = parse_json_text(response_text(openai_response(prompt, stage="metadata")))
     data["thumbnail_briefs"] = data.get("thumbnail_briefs", [])[:1]
     data["testing_note"] = "For native YouTube test, use YouTube Studio's concurrent test when available. Do not sequentially swap manually and call it a controlled A/B test. API support for starting the native experiment is not assumed."
@@ -1270,7 +1314,8 @@ def main() -> None:
         def asset_progress(index: int, total: int, message: str) -> None:
             if _RUN_PROGRESS is not None:
                 pct = 83 + 15 * index / max(1, total)
-                _RUN_PROGRESS.update(f"Asset {index}/{total}: {message}", pct)
+                _RUN_PROGRESS.update(f"Asset acquisition {index}/{total}", pct)
+                _RUN_PROGRESS.update_subtask(message)
         pack = acquire_asset_requests(requests_manifest, shared_assets, progress_callback=asset_progress)
         _write(job_dir / "selected_assets.json", pack)
         _progress(f"Asset acquisition complete: {len(pack.get('assets', []))} resolved; {len(pack.get('unresolved', []))} unresolved.")
