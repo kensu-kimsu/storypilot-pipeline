@@ -42,11 +42,15 @@ class PrePostPipelineTests(unittest.TestCase):
         with patch("prepost_pipeline.openai_response", side_effect=fake_response):
             result = make_metadata("Vanguard story", {"name": "Business Untold"}, {"logline": "A fund changed ownership."})
         self.assertIn("exactly ONE thumbnail brief", captured["prompt"])
+        self.assertIn("recognizable named person, brand, or company", captured["prompt"])
         self.assertEqual(len(result["thumbnail_briefs"]), 1)
         self.assertEqual(result["thumbnail_briefs"][0]["concept"], "A vault key")
 
     def test_thumbnail_prompt_applies_simple_curiosity_gap_rules(self):
         prompt = build_thumbnail_prompt("Vanguard story", {
+            "subject": "John C. Bogle",
+            "subject_type": "person",
+            "recognition_cues": "recognizable archival likeness of the Vanguard founder",
             "concept": "A vault key beside a fund certificate",
             "composition": "One large brass key, off-center",
             "contrast_angle": "investor ownership",
@@ -54,6 +58,10 @@ class PrePostPipelineTests(unittest.TestCase):
         })
         self.assertIn("exactly three clear elements at most", prompt)
         self.assertIn("truthful story", prompt)
+        self.assertIn("John C. Bogle", prompt)
+        self.assertIn("recognizable main subject", prompt)
+        self.assertIn("Do not replace it with a generic silhouette", prompt)
+        self.assertIn("correct identity", prompt)
         self.assertIn("do not render any words or letters", prompt)
         self.assertIn("central 16:9 crop-safe area", prompt)
 
