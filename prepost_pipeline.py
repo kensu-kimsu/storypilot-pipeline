@@ -761,33 +761,37 @@ def fulfill_news_headline_requests(topic: str, script: dict, assets_root: Path, 
                 base_query = str(request.get("search_query", ""))
                 fallback_query = re.sub(r"(?i)\betf\.com\b", " ", base_query)
                 fallback_query = re.sub(r"\s+", " ", fallback_query).strip()
+                fallback_queries = [fallback_query, "VOO Vanguard 2025 inflows record"]
                 fallback_request = {
                     **request,
                     "verified_article_url": "",
                     "verified_article_title": "",
                     "verified_article_publisher": "",
-                    "search_query": fallback_query or topic,
-                    "candidate_keywords": ["VOO", "Vanguard"],
+                    "candidate_keywords": [],
                 }
                 failures = [str(blocked)]
                 fallback_succeeded = False
-                for _ in range(6):
-                    alternative = find_news_article(topic, fallback_request, exclude_domains=excluded)
-                    if not alternative:
+                for query in dict.fromkeys(value for value in fallback_queries if value):
+                    fallback_request["search_query"] = query or topic
+                    for _ in range(6):
+                        alternative = find_news_article(topic, fallback_request, exclude_domains=excluded)
+                        if not alternative:
+                            break
+                        host = _approved_news_domain(alternative.get("publisher_url") or alternative["url"])
+                        excluded.add(host)
+                        try:
+                            alternative_filename = f"{_slug(topic)[:35]}_{_slug(alternative['publisher'])[:24]}_{_slug(alternative['headline'])[:50]}.png"
+                            alternative_path = output_dir / alternative_filename
+                            captured = _capture_headline(alternative, request["highlight_keywords"], alternative_path)
+                            article = alternative
+                            image_path = alternative_path
+                            record["fallback_reason"] = str(blocked)
+                            fallback_succeeded = True
+                            break
+                        except Exception as fallback_error:
+                            failures.append(f"{alternative.get('publisher')}: {type(fallback_error).__name__}: {fallback_error}")
+                    if fallback_succeeded:
                         break
-                    host = _approved_news_domain(alternative.get("publisher_url") or alternative["url"])
-                    excluded.add(host)
-                    try:
-                        alternative_filename = f"{_slug(topic)[:35]}_{_slug(alternative['publisher'])[:24]}_{_slug(alternative['headline'])[:50]}.png"
-                        alternative_path = output_dir / alternative_filename
-                        captured = _capture_headline(alternative, request["highlight_keywords"], alternative_path)
-                        article = alternative
-                        image_path = alternative_path
-                        record["fallback_reason"] = str(blocked)
-                        fallback_succeeded = True
-                        break
-                    except Exception as fallback_error:
-                        failures.append(f"{alternative.get('publisher')}: {type(fallback_error).__name__}: {fallback_error}")
                 if not fallback_succeeded:
                     raise ValueError("Original publisher blocked capture and no alternate article matched: " + " | ".join(failures)[:450])
             record.update(article, **captured, image_path=str(image_path), status="captured")

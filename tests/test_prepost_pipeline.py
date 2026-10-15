@@ -505,7 +505,7 @@ class PrePostPipelineTests(unittest.TestCase):
             self.assertEqual(result["screenshots"][0]["publisher"], "Yahoo Finance")
             self.assertIn("Publisher blocked", result["screenshots"][0]["fallback_reason"])
             self.assertEqual(find_calls[1][0]["highlight_keywords"], ["$124 Billion"])
-            self.assertEqual(find_calls[1][0]["candidate_keywords"], ["VOO", "Vanguard"])
+            self.assertEqual(find_calls[1][0]["candidate_keywords"], [])
             self.assertIn("etf.com", find_calls[1][1])
 
     def test_creative_brief_request_creates_news_headline_asset(self):
