@@ -405,7 +405,7 @@ NEWS_PUBLISHER_DOMAINS = {
     "abc.net.au", "abcnews.go.com", "apnews.com", "arstechnica.com", "bbc.com",
     "bbc.co.uk", "bloomberg.com", "cnbc.com", "cnn.com", "ft.com", "theguardian.com",
     "nytimes.com", "npr.org", "reuters.com", "smh.com.au", "theverge.com", "time.com",
-    "washingtonpost.com", "wsj.com", "wired.com", "techcrunch.com", "news.com.au",
+    "washingtonpost.com", "wsj.com", "wired.com", "techcrunch.com", "news.com.au", "etf.com",
 }
 
 

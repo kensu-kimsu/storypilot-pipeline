@@ -417,10 +417,10 @@ class PrePostPipelineTests(unittest.TestCase):
     def test_news_article_discovery_uses_python_rss_not_openai(self):
         rss = b'''<?xml version="1.0" encoding="UTF-8"?>
         <rss><channel><item>
-          <title>Vanguard changes fund structure - Reuters</title>
+          <title>VOO Sets ETF Flow Record With $124 Billion in 2025 Inflows - ETF.com</title>
           <link>https://news.google.com/rss/articles/example</link>
-          <pubDate>Wed, 15 Oct 2026 10:00:00 GMT</pubDate>
-          <source url="https://www.reuters.com">Reuters</source>
+          <pubDate>Tue, 23 Sep 2025 10:00:00 GMT</pubDate>
+          <source url="https://www.etf.com">ETF.com</source>
         </item></channel></rss>'''
         response = unittest.mock.Mock(content=rss)
         response.raise_for_status.return_value = None
@@ -429,13 +429,14 @@ class PrePostPipelineTests(unittest.TestCase):
         with patch("prepost_pipeline.requests", object()), patch("prepost_pipeline.HTTP", http), \
                 patch("prepost_pipeline.openai_response", side_effect=AssertionError("OpenAI must not be used for screenshot search")):
             result = find_news_article("Vanguard story", {
-                "search_query": "Vanguard fund structure", "highlight_keywords": ["Vanguard"],
+                "search_query": "ETF.com VOO sets ETF flow record $124 billion 2025 inflows September 23",
+                "highlight_keywords": ["$124 Billion"],
             })
-        self.assertEqual(result["headline"], "Vanguard changes fund structure")
-        self.assertEqual(result["publisher"], "Reuters")
+        self.assertEqual(result["headline"], "VOO Sets ETF Flow Record With $124 Billion in 2025 Inflows")
+        self.assertEqual(result["publisher"], "ETF.com")
         self.assertEqual(result["search_provider"], "google_news_rss")
         self.assertEqual(http.get.call_args.args[0], "https://news.google.com/rss/search")
-        self.assertEqual(http.get.call_args.kwargs["params"]["q"], "Vanguard fund structure")
+        self.assertEqual(http.get.call_args.kwargs["params"]["q"], "ETF.com VOO sets ETF flow record $124 billion 2025 inflows September 23")
 
     def test_creative_brief_request_creates_news_headline_asset(self):
         with tempfile.TemporaryDirectory() as temp:
