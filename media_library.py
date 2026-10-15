@@ -711,9 +711,10 @@ def acquire_asset_requests(request_manifest: dict, library: MediaLibrary, *, per
                 print(f"[StoryPilot] Asset {index}/{total}: using captured headline screenshot.", flush=True)
             else:
                 results["unresolved"].append({**request, "status": "screenshot_not_captured"})
+                detail = str(request.get("error") or "No capture error detail was recorded")
                 if progress_callback:
-                    progress_callback(index, total, f"Asset {index}/{total}: requested headline screenshot not captured")
-                print(f"[StoryPilot] Asset {index}/{total}: requested headline screenshot is not available locally.", flush=True)
+                    progress_callback(index, total, f"Asset {index}/{total}: headline screenshot failed — {detail[:100]}")
+                print(f"[StoryPilot] Asset {index}/{total}: headline screenshot failed — {detail}", flush=True)
             continue
         if not query or category not in FOLDERS:
             results["unresolved"].append({**request, "status": "invalid_request"})

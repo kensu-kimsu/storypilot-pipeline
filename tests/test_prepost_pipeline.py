@@ -10,6 +10,7 @@ from PIL import Image
 from prepost_pipeline import (
     _ConsoleProgress,
     create_thumbnail_from_reference,
+    _verified_news_source_for_request,
     make_metadata,
     resolve_thumbnail_reference,
     asset_research,
@@ -99,7 +100,7 @@ class PrePostPipelineTests(unittest.TestCase):
                 "assets": [], "unresolved": [{"asset_id": "news_headline_01", "category": "news_headline_screenshot"}],
             }), encoding="utf-8")
 
-            def fake_capture(topic, script, assets_root, *, job_id):
+            def fake_capture(topic, script, assets_root, *, job_id, research=None):
                 self.assertEqual(topic, "Vanguard investor story")
                 self.assertEqual(job_id, "topic-one")
                 screenshot_request = script["narration_chunks"][0]["news_article_screenshot"]
@@ -437,6 +438,23 @@ class PrePostPipelineTests(unittest.TestCase):
         self.assertEqual(result["search_provider"], "google_news_rss")
         self.assertEqual(http.get.call_args.args[0], "https://news.google.com/rss/search")
         self.assertEqual(http.get.call_args.kwargs["params"]["q"], "ETF.com VOO sets ETF flow record $124 billion 2025 inflows September 23")
+
+    def test_news_screenshot_reuses_matching_verified_research_url(self):
+        research = {"verified_claims": [{
+            "claim_id": "C12", "verification_status": "verified",
+            "claim": "VOO received $124.4 billion in inflows during 2025.",
+            "source_title": "VOO Sets ETF Flow Record With $124 Billion in 2025 Inflows",
+            "publisher": "ETF.com",
+            "url": "https://www.etf.com/sections/features/voos-record-shattering-run-shows-no-signs-slowing",
+        }]}
+        request = {
+            "search_query": "ETF.com VOO sets ETF flow record $124 billion 2025 inflows September 23",
+            "highlight_keywords": ["$124 Billion"],
+        }
+        result = _verified_news_source_for_request(research, request)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["publisher"], "ETF.com")
+        self.assertEqual(result["url"], research["verified_claims"][0]["url"])
 
     def test_creative_brief_request_creates_news_headline_asset(self):
         with tempfile.TemporaryDirectory() as temp:

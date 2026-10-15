@@ -151,7 +151,8 @@ def retry_job_assets(job_dir: Path, base_dir: Path, youtube_audio_library_dir: P
                 print(f"[StoryPilot] Retrying {len(retryable)} requested news headline screenshot(s) with Google News RSS and capture.", flush=True)
                 try:
                     capture_manifest = fulfill_news_headline_requests(
-                        topic, {"narration_chunks": screenshot_chunks}, base_dir / "assets", job_id=job_dir.name
+                        topic, {"narration_chunks": screenshot_chunks}, base_dir / "assets",
+                        job_id=job_dir.name, research=_json(job_dir / "research.json", {}),
                     )
                     captures = {str(item.get("asset_id")): item for item in capture_manifest.get("screenshots", [])}
                     for row in retryable:
@@ -449,6 +450,15 @@ def find_news_article(topic: str, request: dict) -> dict | None:
     checked before a screenshot is saved.
     """
     _require_requests()
+    verified_url = str(request.get("verified_article_url") or "").strip()
+    if verified_url and _is_approved_news_url(verified_url):
+        return {
+            "headline": str(request.get("verified_article_title") or "").strip(),
+            "url": verified_url,
+            "publisher": str(request.get("verified_article_publisher") or urlparse(verified_url).hostname),
+            "published_date": "from verified research source",
+            "search_provider": "verified_research_source",
+        }
     search_query = str(request.get("search_query") or "").strip()
     if not search_query:
         return None
@@ -489,6 +499,56 @@ def find_news_article(topic: str, request: dict) -> dict | None:
             "search_provider": "google_news_rss",
         }
     return None
+
+
+def _verified_news_source_for_request(research: dict, request: dict) -> dict | None:
+    """Reuse a matching, already-verified source URL before querying RSS again."""
+    query = str(request.get("search_query") or "")
+    requested_domains = {
+        match.group(1).lower().removeprefix("www.")
+        for match in re.finditer(r"(?:https?://)?(?:www\.)?([a-z0-9-]+\.[a-z]{2,})", query, re.I)
+    }
+    requested_domains = {domain for domain in requested_domains if domain in NEWS_PUBLISHER_DOMAINS}
+    query_terms = set(re.findall(r"[a-z0-9]+", query.lower())) - {
+        "the", "and", "for", "from", "with", "sets", "record", "article", "headline", "news", "com",
+        "september", "october", "november", "december", "january", "february", "march", "april", "may", "june", "july", "august",
+    }
+    keyword_terms = {
+        token for keyword in request.get("highlight_keywords", [])
+        for token in re.findall(r"[a-z0-9]+", str(keyword).lower())
+    }
+    claim_rows = research.get("verified_claims", []) if isinstance(research, dict) else []
+    candidates = []
+    for claim in claim_rows:
+        if not isinstance(claim, dict) or claim.get("verification_status") not in {"verified", "qualified"}:
+            continue
+        base_text = " ".join(str(claim.get(key, "")) for key in ("claim", "source_title", "support", "publisher", "verification_note"))
+        sources = [{"url": claim.get("url"), "title": claim.get("source_title"), "publisher": claim.get("publisher") }]
+        sources.extend(claim.get("checked_sources", []) if isinstance(claim.get("checked_sources"), list) else [])
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            url = str(source.get("url") or "").strip()
+            if not _is_approved_news_url(url):
+                continue
+            host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+            if requested_domains and not any(host == domain or host.endswith("." + domain) for domain in requested_domains):
+                continue
+            context = f"{base_text} {source.get('title', '')} {source.get('support', '')} {url}".lower()
+            context_terms = set(re.findall(r"[a-z0-9]+", context))
+            keyword_hits = len(keyword_terms & context_terms)
+            query_hits = len(query_terms & context_terms)
+            # Require direct evidence that this source concerns the specific
+            # requested fact; domain match alone must never select an article.
+            if keyword_hits == 0 and query_hits < 2:
+                continue
+            score = keyword_hits * 4 + query_hits
+            candidates.append((score, {
+                "url": url,
+                "title": str(source.get("title") or claim.get("source_title") or ""),
+                "publisher": str(source.get("publisher") or claim.get("publisher") or host),
+            }))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
 def _capture_headline(candidate: dict, keywords: list[str], image_path: Path) -> dict:
@@ -557,7 +617,8 @@ def _capture_headline(candidate: dict, keywords: list[str], image_path: Path) ->
     return {"headline": actual_headline, "highlighted_keywords": result, "http_status": response.status if response else None}
 
 
-def fulfill_news_headline_requests(topic: str, script: dict, assets_root: Path, *, job_id: str) -> dict:
+def fulfill_news_headline_requests(topic: str, script: dict, assets_root: Path, *, job_id: str,
+                                   research: dict | None = None) -> dict:
     """Search and capture no articles unless the script's creative direction requests them."""
     requests_list = _article_screenshot_requests(script)
     if not requests_list:
@@ -569,6 +630,14 @@ def fulfill_news_headline_requests(topic: str, script: dict, assets_root: Path, 
     for request in requests_list:
         record = {**request, "searched": True, "captured_at": datetime.now(timezone.utc).isoformat()}
         try:
+            verified_source = _verified_news_source_for_request(research or {}, request)
+            if verified_source:
+                request = {
+                    **request,
+                    "verified_article_url": verified_source["url"],
+                    "verified_article_title": verified_source["title"],
+                    "verified_article_publisher": verified_source["publisher"],
+                }
             article = find_news_article(topic, request)
             if not article:
                 record.update(status="not_found", error="No matching article found from the approved news publishers")
@@ -1338,7 +1407,9 @@ def prepare_job(channel: dict, topic: str, base_dir: Path, *, generate_thumbnail
     screenshot_requests = _article_screenshot_requests(script)
     if screenshot_requests:
         _progress(f"News visuals: capturing {len(screenshot_requests)} requested article headline(s).")
-    screenshots = fulfill_news_headline_requests(topic, script, base_dir / "assets", job_id=job_id)
+    screenshots = fulfill_news_headline_requests(
+        topic, script, base_dir / "assets", job_id=job_id, research=research
+    )
     screenshot_by_id = {row.get("asset_id"): row for row in screenshots.get("screenshots", [])}
     for asset in asset_manifest["assets"]:
         if asset.get("category") != "news_headline_screenshot":
