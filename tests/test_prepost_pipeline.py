@@ -1,7 +1,4 @@
-import base64
-import io
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,9 +7,9 @@ from unittest.mock import patch
 from PIL import Image
 
 from prepost_pipeline import (
-    build_thumbnail_prompt,
-    generate_thumbnail,
+    create_thumbnail_from_reference,
     make_metadata,
+    resolve_thumbnail_reference,
     asset_research,
     fulfill_news_headline_requests,
     get_niche_config,
@@ -46,44 +43,65 @@ class PrePostPipelineTests(unittest.TestCase):
         self.assertEqual(len(result["thumbnail_briefs"]), 1)
         self.assertEqual(result["thumbnail_briefs"][0]["concept"], "A vault key")
 
-    def test_thumbnail_prompt_applies_simple_curiosity_gap_rules(self):
-        prompt = build_thumbnail_prompt("Vanguard story", {
-            "subject": "John C. Bogle",
-            "subject_type": "person",
-            "recognition_cues": "recognizable archival likeness of the Vanguard founder",
-            "concept": "A vault key beside a fund certificate",
-            "composition": "One large brass key, off-center",
-            "contrast_angle": "investor ownership",
-            "text": "WHO OWNS IT?",
-        })
-        self.assertIn("exactly three clear elements at most", prompt)
-        self.assertIn("truthful story", prompt)
-        self.assertIn("John C. Bogle", prompt)
-        self.assertIn("recognizable main subject", prompt)
-        self.assertIn("Do not replace it with a generic silhouette", prompt)
-        self.assertIn("correct identity", prompt)
-        self.assertIn("do not render any words or letters", prompt)
-        self.assertIn("central 16:9 crop-safe area", prompt)
-
-    def test_thumbnail_generation_outputs_one_center_cropped_1280x720_png(self):
-        image_buffer = io.BytesIO()
-        Image.new("RGB", (1536, 1024), color=(10, 20, 30)).save(image_buffer, format="PNG")
-        encoded = base64.b64encode(image_buffer.getvalue()).decode("ascii")
-
-        class FakeResponse:
-            def raise_for_status(self):
-                pass
-            def json(self):
-                return {"data": [{"b64_json": encoded}]}
-
-        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"OPENAI_API_KEY": "test"}):
-            output = Path(temp) / "thumbnail_1.png"
-            with patch("prepost_pipeline.HTTP.post", return_value=FakeResponse()) as post:
-                self.assertTrue(generate_thumbnail("simple, high-contrast thumbnail", output))
-            self.assertEqual(post.call_args.kwargs["json"]["n"], 1)
+    def test_thumbnail_uses_real_subject_photo_and_outputs_1280x720(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "john_bogle.png"
+            Image.new("RGB", (600, 400), color=(220, 30, 25)).save(source)
+            output = root / "thumbnail_1.png"
+            reference = {
+                "path": str(source), "title": "John C. Bogle portrait",
+                "source": "wikimedia_commons",
+            }
+            concept = {"subject": "John C. Bogle", "subject_type": "person", "text": "THE KEY"}
+            create_thumbnail_from_reference(reference, concept, output, {"brand_accent": "#FFD34E"})
             with Image.open(output) as rendered:
                 self.assertEqual(rendered.size, (1280, 720))
-                self.assertEqual(rendered.format, "PNG")
+                # The center of the large foreground subject panel retains the
+                # source photo's red pixels rather than replacing the subject.
+                self.assertGreater(rendered.getpixel((300, 300))[0], 150)
+
+    def test_thumbnail_reference_downloads_keyless_public_image(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "vanguard_logo.png"
+            Image.new("RGB", (300, 150), color=(25, 60, 130)).save(source)
+            public_match = {
+                "path": str(source), "title": "Vanguard Group logo",
+                "tags": ["Vanguard logo"], "source": "wikimedia_commons",
+                "source_url": "https://commons.wikimedia.org/wiki/File:Vanguard_logo.png",
+                "license": "Public domain", "creator": "Example",
+            }
+            with patch("media_library.MediaLibrary.find_reusable", return_value=[]), \
+                    patch("media_library.MediaLibrary.download_public_archives", return_value=[public_match]) as download:
+                result = resolve_thumbnail_reference("Vanguard", "company", root / "assets")
+            self.assertEqual(result["source"], "wikimedia_commons")
+            self.assertEqual(result["subject_match_score"], 1.0)
+            self.assertIn("Vanguard logo", download.call_args.args[0])
+
+    def test_thumbnail_reference_does_not_trust_search_query_tags_as_subject_match(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "unrelated.png"
+            Image.new("RGB", (300, 150), color=(50, 50, 50)).save(source)
+            unrelated = {
+                "path": str(source), "title": "Generic financial office",
+                "tags": ["Vanguard logo"], "source": "wikimedia_commons",
+                "metadata": {"query": "Vanguard logo"},
+            }
+            with patch("media_library.MediaLibrary.find_reusable", return_value=[]), \
+                    patch("media_library.MediaLibrary.download_public_archives", return_value=[unrelated]):
+                result = resolve_thumbnail_reference("Vanguard", "company", root / "assets")
+            self.assertIsNone(result)
+
+    def test_qa_blocks_thumbnail_when_real_reference_is_missing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "job.json").write_text(json.dumps({"thumbnail_requested": True}), encoding="utf-8")
+            (root / "thumbnail_reference.json").write_text(json.dumps({"status": "subject_image_not_found"}), encoding="utf-8")
+            issues = qa_package(root)
+            self.assertTrue(any("Thumbnail reference is not ready" in issue for issue in issues))
+            self.assertTrue(any("does not use a real downloaded source image" in issue for issue in issues))
 
     def test_asset_discovery_combines_social_candidates_with_archive_candidates(self):
         with tempfile.TemporaryDirectory() as temp:
