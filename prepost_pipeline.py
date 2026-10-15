@@ -407,7 +407,12 @@ NEWS_PUBLISHER_DOMAINS = {
     "bbc.co.uk", "bloomberg.com", "cnbc.com", "cnn.com", "ft.com", "theguardian.com",
     "nytimes.com", "npr.org", "reuters.com", "smh.com.au", "theverge.com", "time.com",
     "washingtonpost.com", "wsj.com", "wired.com", "techcrunch.com", "news.com.au", "etf.com",
+    "finance.yahoo.com", "morningstar.com", "etfaction.com",
 }
+
+
+class ArticleAccessBlockedError(RuntimeError):
+    """Raised when a publisher explicitly blocks browser access to an article."""
 
 
 def _is_approved_news_url(url: str) -> bool:
@@ -415,6 +420,13 @@ def _is_approved_news_url(url: str) -> bool:
         return False
     host = urlparse(url).hostname.lower().rstrip(".")
     return any(host == domain or host.endswith("." + domain) for domain in NEWS_PUBLISHER_DOMAINS)
+
+
+def _approved_news_domain(url: str) -> str:
+    host = (urlparse(str(url)).hostname or "").lower().removeprefix("www.")
+    matches = [domain for domain in NEWS_PUBLISHER_DOMAINS
+               if host == domain or host.endswith("." + domain)]
+    return max(matches, key=len) if matches else host
 
 
 def _article_screenshot_requests(script: dict) -> list[dict]:
@@ -441,7 +453,7 @@ def _article_screenshot_requests(script: dict) -> list[dict]:
     return requests_list
 
 
-def find_news_article(topic: str, request: dict) -> dict | None:
+def find_news_article(topic: str, request: dict, *, exclude_domains: set[str] | None = None) -> dict | None:
     """Search the public Google News RSS feed from Python, without OpenAI API calls.
 
     Google News RSS is an undocumented interface, so this is keyless but may
@@ -450,8 +462,12 @@ def find_news_article(topic: str, request: dict) -> dict | None:
     checked before a screenshot is saved.
     """
     _require_requests()
+    exclude_domains = {str(domain).lower().removeprefix("www.") for domain in (exclude_domains or set())}
     verified_url = str(request.get("verified_article_url") or "").strip()
-    if verified_url and _is_approved_news_url(verified_url):
+    verified_host = _approved_news_domain(verified_url)
+    if verified_url and _is_approved_news_url(verified_url) and not any(
+        verified_host == domain or verified_host.endswith("." + domain) for domain in exclude_domains
+    ):
         return {
             "headline": str(request.get("verified_article_title") or "").strip(),
             "url": verified_url,
@@ -474,7 +490,8 @@ def find_news_article(topic: str, request: dict) -> dict | None:
     except ET.ParseError as exc:
         raise ValueError(f"Google News returned invalid RSS/XML: {exc}") from exc
 
-    keywords = [str(value).strip().casefold() for value in request.get("highlight_keywords", []) if str(value).strip()]
+    keywords = [str(value).strip().casefold() for value in
+                request.get("candidate_keywords", request.get("highlight_keywords", [])) if str(value).strip()]
     for item in root.findall(".//item")[:30]:
         title = " ".join((item.findtext("title") or "").split())
         link = (item.findtext("link") or "").strip()
@@ -482,6 +499,9 @@ def find_news_article(topic: str, request: dict) -> dict | None:
         publisher = " ".join((source_node.text if source_node is not None and source_node.text else "").split())
         publisher_url = source_node.get("url", "") if source_node is not None else ""
         if not title or not link or not _is_approved_news_url(publisher_url):
+            continue
+        publisher_host = (urlparse(publisher_url).hostname or "").lower().removeprefix("www.")
+        if any(publisher_host == domain or publisher_host.endswith("." + domain) for domain in exclude_domains):
             continue
         # Google News often appends the publisher after a final dash. Remove it
         # only when it matches the structured source element.
@@ -495,6 +515,7 @@ def find_news_article(topic: str, request: dict) -> dict | None:
             # validates the final browser URL against the publisher allowlist.
             "url": link,
             "publisher": publisher or urlparse(publisher_url).hostname,
+            "publisher_url": publisher_url,
             "published_date": (item.findtext("pubDate") or "unknown").strip(),
             "search_provider": "google_news_rss",
         }
@@ -591,10 +612,18 @@ def _capture_headline(candidate: dict, keywords: list[str], image_path: Path) ->
             response = page.goto(candidate["url"], wait_until="domcontentloaded")
             if not _is_approved_news_url(page.url):
                 raise ValueError("News page redirected outside the approved publisher list")
+            if response and response.status in {401, 403, 429}:
+                raise ArticleAccessBlockedError(
+                    f"Publisher blocked automated access (HTTP {response.status}); page: {page.url}"
+                )
             headline = page.locator("h1").first
             if not headline.count() or not headline.is_visible():
                 raise ValueError("Article page has no visible headline heading (h1)")
             actual_headline = " ".join(headline.inner_text().split())
+            if (response and response.status in {401, 403, 429}) or "sorry, you have been blocked" in actual_headline.casefold():
+                raise ArticleAccessBlockedError(
+                    f"Publisher blocked automated access (HTTP {response.status if response else 'unknown'}); page: {page.url}"
+                )
             if not actual_headline:
                 raise ValueError("Article page headline is empty")
             matched_text = _matched_keyword_text(actual_headline, keywords)
@@ -721,7 +750,46 @@ def fulfill_news_headline_requests(topic: str, script: dict, assets_root: Path, 
             record.update(article)
             filename = f"{_slug(topic)[:35]}_{_slug(article['publisher'])[:24]}_{_slug(article['headline'])[:50]}.png"
             image_path = output_dir / filename
-            captured = _capture_headline(article, request["highlight_keywords"], image_path)
+            try:
+                captured = _capture_headline(article, request["highlight_keywords"], image_path)
+            except ArticleAccessBlockedError as blocked:
+                # Do not work around publisher access controls. Try a different
+                # approved publisher for the same fact, retaining the original
+                # highlight terms for page-level validation.
+                excluded = {_approved_news_domain(article.get("publisher_url") or article["url"])}
+                excluded.discard("")
+                base_query = str(request.get("search_query", ""))
+                fallback_query = re.sub(r"(?i)\betf\.com\b", " ", base_query)
+                fallback_query = re.sub(r"\s+", " ", fallback_query).strip()
+                fallback_request = {
+                    **request,
+                    "verified_article_url": "",
+                    "verified_article_title": "",
+                    "verified_article_publisher": "",
+                    "search_query": fallback_query or topic,
+                    "candidate_keywords": ["VOO", "Vanguard"],
+                }
+                failures = [str(blocked)]
+                fallback_succeeded = False
+                for _ in range(6):
+                    alternative = find_news_article(topic, fallback_request, exclude_domains=excluded)
+                    if not alternative:
+                        break
+                    host = _approved_news_domain(alternative.get("publisher_url") or alternative["url"])
+                    excluded.add(host)
+                    try:
+                        alternative_filename = f"{_slug(topic)[:35]}_{_slug(alternative['publisher'])[:24]}_{_slug(alternative['headline'])[:50]}.png"
+                        alternative_path = output_dir / alternative_filename
+                        captured = _capture_headline(alternative, request["highlight_keywords"], alternative_path)
+                        article = alternative
+                        image_path = alternative_path
+                        record["fallback_reason"] = str(blocked)
+                        fallback_succeeded = True
+                        break
+                    except Exception as fallback_error:
+                        failures.append(f"{alternative.get('publisher')}: {type(fallback_error).__name__}: {fallback_error}")
+                if not fallback_succeeded:
+                    raise ValueError("Original publisher blocked capture and no alternate article matched: " + " | ".join(failures)[:450])
             record.update(article, **captured, image_path=str(image_path), status="captured")
         except Exception as exc:
             record.update(status="failed", error=f"{type(exc).__name__}: {str(exc)[:300]}")

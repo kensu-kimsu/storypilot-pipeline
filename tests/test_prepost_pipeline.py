@@ -8,6 +8,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from prepost_pipeline import (
+    ArticleAccessBlockedError,
     _ConsoleProgress,
     _matched_keyword_text,
     create_thumbnail_from_reference,
@@ -461,6 +462,51 @@ class PrePostPipelineTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["publisher"], "ETF.com")
         self.assertEqual(result["url"], research["verified_claims"][0]["url"])
+
+    def test_news_screenshot_tries_another_publisher_when_verified_source_blocks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            request = {
+                "asset_id": "news_headline_01", "search_query": "ETF.com VOO 2025 inflows",
+                "highlight_keywords": ["$124 Billion"], "reason": "Show the record flow figure",
+            }
+            script = {"narration_chunks": [{"news_article_screenshot": request}]}
+            etf_article = {
+                "url": "https://www.etf.com/story", "publisher_url": "https://www.etf.com",
+                "publisher": "ETF.com", "headline": "VOO's record run",
+                "search_provider": "verified_research_source",
+            }
+            alternate = {
+                "url": "https://news.google.com/rss/articles/yahoo", "publisher_url": "https://finance.yahoo.com",
+                "publisher": "Yahoo Finance", "headline": "VOO drew $124 billion in 2025",
+                "search_provider": "google_news_rss",
+            }
+            find_calls = []
+
+            def find_article(_topic, candidate_request, *, exclude_domains=None):
+                find_calls.append((candidate_request, exclude_domains))
+                return alternate if exclude_domains else etf_article
+
+            def capture(article, _keywords, _path):
+                if article["publisher"] == "ETF.com":
+                    raise ArticleAccessBlockedError("Publisher blocked automated access")
+                return {"headline": "VOO drew $124 billion in 2025", "highlighted_keywords": ["$124 billion"],
+                        "highlight_location": "headline", "http_status": 200}
+
+            with patch("prepost_pipeline._verified_news_source_for_request", return_value={
+                    "url": etf_article["url"], "title": etf_article["headline"], "publisher": "ETF.com"}), \
+                    patch("prepost_pipeline.find_news_article", side_effect=find_article), \
+                    patch("prepost_pipeline._capture_headline", side_effect=capture):
+                result = fulfill_news_headline_requests(
+                    "Vanguard fund flows", script, root / "assets", job_id="test-job",
+                )
+
+            self.assertEqual(result["screenshot_count"], 1)
+            self.assertEqual(result["screenshots"][0]["publisher"], "Yahoo Finance")
+            self.assertIn("Publisher blocked", result["screenshots"][0]["fallback_reason"])
+            self.assertEqual(find_calls[1][0]["highlight_keywords"], ["$124 Billion"])
+            self.assertEqual(find_calls[1][0]["candidate_keywords"], ["VOO", "Vanguard"])
+            self.assertIn("etf.com", find_calls[1][1])
 
     def test_creative_brief_request_creates_news_headline_asset(self):
         with tempfile.TemporaryDirectory() as temp:
